@@ -1,0 +1,2 @@
+scenario,runs,completion_s_mean,completion_s_stdev,throughput_mbps_mean,throughput_mbps_stdev,rtt_avg_ms_mean,rtt_avg_ms_stdev,retransmissions_mean,retransmissions_stdev,duplicate_acks_mean,duplicate_acks_stdev
+Baseline,1,0.01,0.0,6856.87,0.0,,,,,,

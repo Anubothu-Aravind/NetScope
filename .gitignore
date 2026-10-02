@@ -1,0 +1,21 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+env/
+
+# Test data and temporary transfer files
+tests/data/
+results/pcaps/
+*.bin
+*.tmp
+*.pcap
+*.pcapng
+
+# OS artifacts
+.DS_Store
+Thumbs.db

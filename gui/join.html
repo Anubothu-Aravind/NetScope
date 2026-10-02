@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>NetScope — Peer Join</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #020C21;
+      color: #E6EDF6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .card {
+      background: rgba(15, 27, 49, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border-radius: 24px;
+      padding: 28px 22px;
+      width: 100%;
+      max-width: 420px;
+      text-align: center;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
+    }
+    .badge {
+      display: inline-block;
+      padding: 5px 14px;
+      background: rgba(74, 120, 176, 0.2);
+      border: 1px solid rgba(74, 120, 176, 0.4);
+      color: #78A6D8;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 999px;
+      margin-bottom: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+    }
+    p {
+      color: #8C99B2;
+      font-size: 13.5px;
+      line-height: 1.45;
+      margin-bottom: 20px;
+    }
+    .session-box {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px dashed rgba(74, 120, 176, 0.4);
+      border-radius: 14px;
+      padding: 10px 14px;
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .session-lbl {
+      font-size: 11px;
+      color: #78A6D8;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .session-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      color: #FFFFFF;
+    }
+    .form-group {
+      text-align: left;
+      margin-bottom: 18px;
+    }
+    .form-lbl {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #A4B3CB;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .form-input {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: #FFFFFF;
+      font-size: 15px;
+      font-weight: 500;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus {
+      border-color: #4A78B0;
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .role-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+    .role-card {
+      background: rgba(255, 255, 255, 0.04);
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      padding: 16px 10px;
+      color: #E6EDF6;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .role-card.active {
+      background: rgba(74, 120, 176, 0.28);
+      border-color: #4A78B0;
+      color: #FFFFFF;
+      box-shadow: 0 0 16px rgba(74, 120, 176, 0.35);
+    }
+    .role-icon {
+      font-size: 24px;
+    }
+    .role-title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .role-desc {
+      font-size: 11px;
+      color: #8C99B2;
+    }
+    .role-card.active .role-desc {
+      color: #C5D7ED;
+    }
+    .btn-action {
+      width: 100%;
+      background: #4A78B0;
+      color: #FFFFFF;
+      border: none;
+      border-radius: 999px;
+      padding: 14px;
+      font-size: 15.5px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(74, 120, 176, 0.35);
+      transition: all 0.2s ease;
+    }
+    .btn-action:hover {
+      background: #5A88C0;
+    }
+    .btn-action:active {
+      transform: scale(0.98);
+      opacity: 0.9;
+    }
+    .btn-action:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .status-panel {
+      display: none;
+      margin-top: 20px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 16px;
+      padding: 16px;
+      text-align: left;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .status-row:last-child {
+      margin-bottom: 0;
+    }
+    .pulse-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #FA8231;
+      box-shadow: 0 0 10px #FA8231;
+      margin-right: 6px;
+      animation: pulse 1.5s infinite;
+    }
+    .pulse-dot.ready {
+      background: #20BF6B;
+      box-shadow: 0 0 10px #20BF6B;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.4; }
+      50% { opacity: 1; }
+      100% { opacity: 0.4; }
+    }
+    .pair-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(74, 120, 176, 0.25);
+      color: #78A6D8;
+    }
+    .alert-box {
+      display: none;
+      padding: 12px;
+      border-radius: 12px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      text-align: left;
+    }
+    .alert-error {
+      background: rgba(235, 59, 90, 0.15);
+      border: 1px solid rgba(235, 59, 90, 0.3);
+      color: #EB3B5A;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">NetScope Control Plane</div>
+    <h1>Connect Device</h1>
+    <p>Join this high-performance peer-to-peer TCP measurement session.</p>
+
+    <div class="alert-box alert-error" id="error-box"></div>
+
+    <div class="session-box">
+      <span class="session-lbl">Session</span>
+      <span class="session-code" id="disp-session-id">{{SESSION_ID}}</span>
+    </div>
+
+    <!-- Registration & Role Selection -->
+    <div id="setup-section">
+      <div class="form-group">
+        <label class="form-lbl" for="client-name-input">Device Name</label>
+        <input type="text" id="client-name-input" class="form-input" maxlength="24" placeholder="e.g. Phone-A, Laptop-B">
+      </div>
+
+      <div class="form-lbl" style="text-align: left; margin-bottom: 8px;">Select Device Role</div>
+      <div class="role-grid">
+        <div class="role-card active" id="role-card-send" onclick="selectRole('send')">
+          <div class="role-icon">📤</div>
+          <div class="role-title">SEND FILE</div>
+          <div class="role-desc">Source sender node</div>
+        </div>
+        <div class="role-card" id="role-card-recv" onclick="selectRole('receive')">
+          <div class="role-icon">📥</div>
+          <div class="role-title">RECEIVE FILE</div>
+          <div class="role-desc">Target sink node</div>
+        </div>
+      </div>
+
+      <button type="button" class="btn-action" id="btn-join" onclick="joinSession()">
+        Join Session
+      </button>
+    </div>
+
+    <!-- Active Connected & Paired Status -->
+    <div class="status-panel" id="status-panel">
+      <div class="status-row">
+        <span style="color: #8C99B2;">Registration</span>
+        <b id="status-reg-name">Phone-A</b>
+      </div>
+      <div class="status-row">
+        <span style="color: #8C99B2;">Active Role</span>
+        <span class="pair-badge" id="status-role-badge">SEND</span>
+      </div>
+      <div class="status-row" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
+        <span style="color: #8C99B2;">Pairing State</span>
+        <div style="display: flex; align-items: center;">
+          <span class="pulse-dot" id="status-dot"></span>
+          <b id="status-pair-state" style="font-size: 13px;">Waiting for peer...</b>
+        </div>
+      </div>
+      <div id="pair-details" style="display: none; margin-top: 8px; font-size: 12px; color: #8C99B2;">
+        <div class="status-row">
+          <span>Pair ID</span>
+          <b id="status-pair-id" style="color: #E6EDF6;">P-001</b>
+        </div>
+        <div class="status-row">
+          <span>Peer Node</span>
+          <b id="status-peer-name" style="color: #E6EDF6;">--</b>
+        </div>
+      </div>
+      <div style="margin-top: 14px;">
+        <button type="button" class="btn-action" style="padding: 8px 14px; font-size: 12px; background: rgba(255,255,255,0.1); box-shadow: none;" onclick="leaveSession()">
+          Switch Role / Leave
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const sessionId = "{{SESSION_ID}}";
+    let selectedRole = "send";
+    let clientId = sessionStorage.getItem("netscope_client_id") || null;
+    let pollInterval = null;
+
+    // Generate sensible default client name
+    const defaultName = "Device-" + Math.random().toString(36).substring(2, 6).toUpperCase();
+    document.getElementById("client-name-input").value = defaultName;
+
+    function selectRole(role) {
+      selectedRole = role;
+      document.getElementById("role-card-send").classList.toggle("active", role === "send");
+      document.getElementById("role-card-recv").classList.toggle("active", role === "receive");
+    }
+
+    function showError(msg) {
+      const box = document.getElementById("error-box");
+      box.innerText = msg;
+      box.style.display = "block";
+    }
+
+    async function checkSession() {
+      try {
+        const res = await fetch(`/api/session/${sessionId}`);
+        if (!res.ok) {
+          showError("Session NS-" + sessionId + " was not found or has expired. Please scan a fresh QR code.");
+          document.getElementById("btn-join").disabled = true;
+        }
+      } catch (e) {
+        showError("Unable to reach NetScope server. Ensure device is on the same local network.");
+      }
+    }
+
+    async function joinSession() {
+      const nameInput = document.getElementById("client-name-input");
+      const clientName = nameInput.value.trim() || defaultName;
+      const joinBtn = document.getElementById("btn-join");
+      joinBtn.disabled = true;
+      joinBtn.innerText = "Registering...";
+
+      try {
+        const res = await fetch(`/api/session/${sessionId}/clients`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            client_name: clientName,
+            role: selectedRole
+          })
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || "Registration failed");
+        }
+
+        const data = await res.json();
+        clientId = data.client_id;
+        sessionStorage.setItem("netscope_client_id", clientId);
+
+        // Update UI to Connected State
+        document.getElementById("setup-section").style.display = "none";
+        document.getElementById("status-panel").style.display = "block";
+        document.getElementById("status-reg-name").innerText = clientName;
+        document.getElementById("status-role-badge").innerText = selectedRole.toUpperCase();
+
+        startPairPolling();
+      } catch (err) {
+        showError("Registration Error: " + err.message);
+        joinBtn.disabled = false;
+        joinBtn.innerText = "Join Session";
+      }
+    }
+
+    function startPairPolling() {
+      if (pollInterval) clearInterval(pollInterval);
+      pollPairStatus();
+      pollInterval = setInterval(pollPairStatus, 1500);
+    }
+
+    async function pollPairStatus() {
+      if (!clientId) return;
+      try {
+        const res = await fetch(`/api/session/${sessionId}/pair?client_id=${clientId}`);
+        if (!res.ok) return;
+        const pair = await res.json();
+
+        const dot = document.getElementById("status-dot");
+        const stateTxt = document.getElementById("status-pair-state");
+        const details = document.getElementById("pair-details");
+
+        if (pair && pair.pair_id) {
+          dot.className = "pulse-dot ready";
+          stateTxt.innerText = `PAIRED (${pair.status.toUpperCase()})`;
+          details.style.display = "block";
+          document.getElementById("status-pair-id").innerText = pair.pair_id;
+          const peer = (pair.sender_id === clientId) ? pair.receiver_name : pair.sender_name;
+          document.getElementById("status-peer-name").innerText = peer || "Connected Peer";
+        } else {
+          dot.className = "pulse-dot";
+          stateTxt.innerText = "Waiting for peer...";
+          details.style.display = "none";
+        }
+      } catch (e) {
+        // network transient
+      }
+    }
+
+    async function leaveSession() {
+      if (pollInterval) clearInterval(pollInterval);
+      if (clientId) {
+        try {
+          await fetch(`/api/session/${sessionId}/clients/${clientId}`, { method: "DELETE" });
+        } catch (e) {}
+      }
+      sessionStorage.removeItem("netscope_client_id");
+      clientId = null;
+      document.getElementById("setup-section").style.display = "block";
+      document.getElementById("status-panel").style.display = "none";
+      document.getElementById("btn-join").disabled = false;
+      document.getElementById("btn-join").innerText = "Join Session";
+    }
+
+    // Auto-verify session on load
+    window.addEventListener("DOMContentLoaded", () => {
+      checkSession();
+    });
+  </script>
+</body>
+</html>

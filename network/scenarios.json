@@ -1,0 +1,79 @@
+[
+  {
+    "name": "Baseline",
+    "delay": "0ms",
+    "loss": "0%",
+    "bandwidth": "Unlimited",
+    "description": "Unimpaired link baseline"
+  },
+  {
+    "name": "Delay-1",
+    "delay": "50ms",
+    "loss": "0%",
+    "bandwidth": "Unlimited",
+    "description": "50 ms latency injection"
+  },
+  {
+    "name": "Delay-2",
+    "delay": "100ms",
+    "loss": "0%",
+    "bandwidth": "Unlimited",
+    "description": "100 ms latency injection"
+  },
+  {
+    "name": "Delay-3",
+    "delay": "200ms",
+    "loss": "0%",
+    "bandwidth": "Unlimited",
+    "description": "200 ms latency injection"
+  },
+  {
+    "name": "Loss-1",
+    "delay": "0ms",
+    "loss": "1%",
+    "bandwidth": "Unlimited",
+    "description": "1% packet loss"
+  },
+  {
+    "name": "Loss-2",
+    "delay": "0ms",
+    "loss": "2%",
+    "bandwidth": "Unlimited",
+    "description": "2% packet loss"
+  },
+  {
+    "name": "Loss-3",
+    "delay": "0ms",
+    "loss": "5%",
+    "bandwidth": "Unlimited",
+    "description": "5% packet loss"
+  },
+  {
+    "name": "Bandwidth-1",
+    "delay": "0ms",
+    "loss": "0%",
+    "bandwidth": "10mbit",
+    "description": "10 Mbps bandwidth cap"
+  },
+  {
+    "name": "Bandwidth-2",
+    "delay": "0ms",
+    "loss": "0%",
+    "bandwidth": "5mbit",
+    "description": "5 Mbps bandwidth cap"
+  },
+  {
+    "name": "Bandwidth-3",
+    "delay": "0ms",
+    "loss": "0%",
+    "bandwidth": "1mbit",
+    "description": "1 Mbps bandwidth cap"
+  },
+  {
+    "name": "Combined",
+    "delay": "100ms",
+    "loss": "2%",
+    "bandwidth": "5mbit",
+    "description": "Combined impairment: 100ms delay + 2% loss + 5Mbps rate"
+  }
+]

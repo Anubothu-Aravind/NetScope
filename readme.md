@@ -134,10 +134,10 @@ sequenceDiagram
     S-->>B: File Transfer
 ```
 
-Example connection information:
+Example connection information (Web Session API on Port 8000, TCP Data on Port 5000):
 
 ```text
-http://192.168.1.20:5000/join/AB12CD
+http://192.168.1.20:8000/join/AB12CD
 ```
 
 ---
@@ -254,28 +254,40 @@ The project measures:
 
 ---
 
-## 14. Wireshark Analysis
+## 14. Wireshark & Packet Capture Analysis
 
-Useful filters:
+### Where to Impair and Where to Capture
 
+- **Where to Impair:** Impair on the **Client node egress** (`eth0` on Ubuntu Machine 1).
+- **Transfer Direction:** Use **Send mode** (Client uploads to Server).
+- **Where to Capture:** Capture on the **Client node** (`eth0`).
+
+#### Why Impair on Egress and Capture on the Sender?
+1. **One-Way Delay & Expected RTT:**
+   Linux `tc netem` applies delay to outgoing (egress) packets. For a one-way delay of $D$ ms and baseline round-trip time $RTT_0$, the forward packet experiences $\frac{RTT_0}{2} + D$, while the returning acknowledgment (ACK) is unimpaired ($\frac{RTT_0}{2}$). The measured RTT is:
+   $$\text{Expected } RTT \approx RTT_0 + D$$
+2. **Sender-Side Retransmission Visibility:**
+   TCP retransmissions originate at the sender when a retransmission timeout (RTO) expires or when 3 duplicate ACKs arrive. The receiving node never observes lost packets—it only sees delayed arrivals or out-of-order data. Therefore, Wireshark/tshark filter `tcp.analysis.retransmission` **must be captured on the sending node** to accurately count retransmitted segments.
+
+### Enabling Non-Root Packet Capture
+To allow `tshark` packet sniffing without running the whole python process as root:
+```bash
+sudo dpkg-reconfigure wireshark-common   # Select <Yes> when prompted
+sudo usermod -aG wireshark $USER
+```
+*Note: Log out and log back in for group permissions to take effect.*
+
+### Useful Wireshark Filters
 ```text
 tcp
-```
-
-```text
-tcp.analysis.retransmission
-```
-
-```text
-tcp.analysis.duplicate_ack
-```
-
-```text
-tcp.flags.syn == 1
-```
-
-```text
 tcp.port == 5000
+tcp.flags.syn == 1
+tcp.analysis.initial_rtt
+tcp.analysis.ack_rtt
+tcp.analysis.retransmission
+tcp.analysis.duplicate_ack
+tcp.analysis.out_of_order
+tcp.analysis.lost_segment
 ```
 
 ---
@@ -430,12 +442,18 @@ tcp-network-project/
 
 ## Milestone 1 — Environment Setup
 
-- Prepare two Ubuntu machines
-- Install Python
-- Install Wireshark
-- Install tcpdump
-- Install iperf3
-- Verify network connectivity
+### 1. Package Installation (Both Machines)
+Run the following on Ubuntu Machine 1 (Client) and Ubuntu Machine 2 (Server/Analyzer):
+
+```bash
+sudo apt update && sudo apt install -y python3 iproute2 tcpdump tshark iperf3
+```
+
+### 2. Verify Connectivity
+Test basic IP reachability between Machine 1 and Machine 2:
+```bash
+ping -c 4 <SERVER_IP>
+```
 
 **Outcome:** Two machines communicate successfully.
 
@@ -443,24 +461,53 @@ tcp-network-project/
 
 ## Milestone 2 — TCP Communication
 
-- Implement TCP server
-- Implement TCP client
-- Establish connection
-- Send test messages
-- Close connection
+- Implemented in `server/tcp_server.py` and `client/tcp_client.py` using length-prefixed framing (`common/protocol.py`).
+- Data port: TCP **5000**.
+- Measures connection establishment time (SYN -> SYN-ACK -> ACK handshake).
 
-**Outcome:** Working TCP connection.
+**Outcome:** Working multi-threaded TCP connection.
 
 ---
 
 ## Milestone 3 — File Transfer
 
-- Implement file sending
-- Implement file receiving
-- Add progress
-- Verify file integrity
+- Chunked binary streaming (64 KB chunks).
+- Full end-to-end SHA-256 integrity check.
+- Real-time ASCII progress bar and automatic JSONL performance logging to `results/transfers.jsonl`.
 
-**Outcome:** Reliable file transfer.
+### Exact Commands
+
+#### Start Server (Machine 2)
+```bash
+python3 server/tcp_server.py --host 0.0.0.0 --port 5000 --storage-dir server_storage
+```
+
+#### Run Client (Machine 1) - Send File
+```bash
+python3 client/tcp_client.py send --server <SERVER_IP> --port 5000 --file tests/data/test_10mb.bin --scenario Baseline
+```
+
+#### Run Client (Machine 1) - Receive File
+```bash
+python3 client/tcp_client.py receive --server <SERVER_IP> --port 5000 --file test_10mb.bin --scenario Baseline --dest-dir downloads
+```
+
+#### Run Controlled Impairment Experiment (Combined: 100ms delay, 2% loss, 5Mbps)
+```bash
+# 1. Apply impairment on the egress interface (e.g. eth0)
+sudo ./network/impair.sh eth0 apply --delay 100ms --loss 2% --rate 5mbit
+
+# 2. Verify active kernel qdisc
+./network/impair.sh eth0 show
+
+# 3. Perform transfer under impairment
+python3 client/tcp_client.py send --server <SERVER_IP> --port 5000 --file tests/data/test_10mb.bin --scenario Combined
+
+# 4. Clear impairment
+sudo ./network/impair.sh eth0 clear
+```
+
+**Outcome:** Reliable file transfer with verified integrity and metrics logging.
 
 ---
 
@@ -478,15 +525,44 @@ tcp-network-project/
 
 ---
 
-## Milestone 5 — Wireshark
+## Milestone 5 — Packet Capture & Protocol Dissection
 
-- Capture TCP traffic
-- Identify SYN/SYN-ACK/ACK
-- Identify data packets
-- Identify ACKs
-- Identify connection termination
+Implemented in `capture/sniffer.py` and `analysis/pcap_analyzer.py`:
+- Captures live TCP streams via `tshark -i <iface> -f "tcp port 5000" -w <out.pcap>`.
+- Gracefully terminates with `SIGINT` to ensure all packet headers and footers flush.
+- Dissects packets without external Python frameworks using `tshark -r <file> -T fields`.
+- Extracts:
+  - 3-way handshake duration (`handshake_ms`)
+  - Initial RTT (`initial_rtt_ms`)
+  - Continuous ACK RTT (`rtt_min_ms`, `rtt_max_ms`, `rtt_avg_ms`)
+  - Retransmission counters (`retransmissions`, `fast_retransmissions`, `duplicate_acks`, `lost_segments`)
+  - TCP termination flags (`fin_seen`, `rst_seen`)
+- Merges application-level metrics with packet analysis into `results/transfers.jsonl`.
 
-**Outcome:** Complete TCP packet capture.
+### Commands
+
+#### Standalone Capture
+```bash
+python3 capture/sniffer.py --iface eth0 --port 5000 --out results/pcaps/test.pcap
+```
+
+#### Standalone PCAP Analysis
+```bash
+python3 analysis/pcap_analyzer.py results/pcaps/test.pcap --port 5000
+```
+
+#### Automated Benchmark with Live Packet Capture & Analysis
+```bash
+# Run 5 repeats per scenario with packet capture & dissection
+python3 experiments/run_all.py --server <SERVER_IP> --port 5000 --iface eth0 --file tests/data/test_10mb.bin --capture --repeats 5
+```
+
+#### Generate Statistical Summary Table & CSV
+```bash
+python3 experiments/summarize.py --input results/transfers.jsonl --output results/summary.csv
+```
+
+**Outcome:** Complete TCP packet capture, automated protocol dissection, and statistical summary reporting.
 
 ---
 

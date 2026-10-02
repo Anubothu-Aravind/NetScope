@@ -1,0 +1,4 @@
+scenario,runs,completion_s_mean,completion_s_stdev,throughput_mbps_mean,throughput_mbps_stdev,rtt_avg_ms_mean,rtt_avg_ms_stdev,retransmissions_mean,retransmissions_stdev,duplicate_acks_mean,duplicate_acks_stdev
+Localhost-Test-Send,2,0.01,0.0,6192.19,1267.81,,,,,,
+Localhost-Test-Recv,2,0.01,0.0,6319.75,464.89,,,,,,
+Baseline,2,0.02,0.0,4910.97,966.45,,,,,,

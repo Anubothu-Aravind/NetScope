@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Name=NetScope
+GenericName=TCP Performance Analyzer
+Comment=TCP Reliability and Performance under Network Impairments
+Exec=bash -c "cd /home/aravind/Desktop/MTech/DCNIP/NetScope && ./venv/bin/python3 netscope.py || python3 netscope.py"
+Icon=/home/aravind/Desktop/MTech/DCNIP/NetScope/gui/icon.svg
+Terminal=false
+Type=Application
+Categories=Development;Network;Science;Education;
+StartupNotify=true
+StartupWMClass=NetScope

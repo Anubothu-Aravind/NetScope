@@ -1,0 +1,17 @@
+{
+  "name": "NetScope - TCP Analyzer",
+  "short_name": "NetScope",
+  "description": "TCP Reliability and Performance Analyzer under Network Impairments",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#E6EDF6",
+  "theme_color": "#0F1B31",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "128x128 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

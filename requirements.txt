@@ -1,0 +1,7 @@
+# NetScope: TCP Reliability and Performance under Network Impairments
+# Core (Milestones 1-3 & 6): Pure Python 3 standard library
+# App & GUI (Milestones 4 & 8):
+fastapi>=0.110.0
+uvicorn>=0.28.0
+segno>=1.6.0
+python-multipart>=0.0.9

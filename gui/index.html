@@ -1,0 +1,1580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0F1B31">
+  <title>NetScope — TCP Reliability & Performance Analyzer</title>
+  <link rel="manifest" href="/manifest.json">
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --u: min(100vw / 1280, 100vh / 960);
+      --ink: #020C21;
+      --ink-soft: #0F182F;
+      --muted: #59627E;
+      --muted2: #4D5B77;
+      --frame: #E6EDF6;
+      --cta: #0F1B31;
+      --cta-knob: #384B64;
+      --meet-knob: #1A2B45;
+      --accent: #4A78B0;
+      --track: #DDE4EE;
+      --green: #20BF6B;
+      --red: #EB3B5A;
+      --amber: #FA8231;
+    }
+
+    @supports (height: 100dvh) {
+      :root {
+        --u: min(100vw / 1280, 100dvh / 960);
+      }
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      background: var(--frame);
+      overflow: hidden;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-synthesis: none;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: geometricPrecision;
+    }
+
+    .page {
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(135deg, #E6EDF6 0%, #D4E0EF 100%);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Ambient glass gradients */
+    .glow-blob {
+      position: absolute;
+      width: calc(600 * var(--u));
+      height: calc(600 * var(--u));
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(74, 120, 176, 0.25) 0%, rgba(230, 237, 246, 0) 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .blob-1 { top: calc(-100 * var(--u)); left: calc(-100 * var(--u)); }
+    .blob-2 { bottom: calc(-150 * var(--u)); right: calc(-150 * var(--u)); }
+
+    /* Top Navigation */
+    .top-nav {
+      position: relative;
+      z-index: 10;
+      height: calc(80 * var(--u));
+      padding: 0 calc(40 * var(--u));
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: calc(12 * var(--u));
+      text-decoration: none;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .brand svg {
+      width: calc(38 * var(--u));
+      height: calc(38 * var(--u));
+    }
+    .brand b {
+      font-size: calc(22 * var(--u));
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    /* Nav Glass Capsule */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: calc(6 * var(--u));
+      background: rgba(255, 255, 255, 0.72);
+      border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.85);
+      border-radius: 999px;
+      padding: calc(6 * var(--u)) calc(10 * var(--u));
+      backdrop-filter: blur(calc(30 * var(--u)));
+      -webkit-backdrop-filter: blur(calc(30 * var(--u)));
+      box-shadow: 0 calc(2 * var(--u)) calc(12 * var(--u)) rgba(28, 52, 92, 0.06);
+    }
+    .nav-btn {
+      background: transparent;
+      border: none;
+      padding: calc(8 * var(--u)) calc(16 * var(--u));
+      border-radius: 999px;
+      font-size: calc(14.5 * var(--u));
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.2, 0.7, 0.3, 1);
+    }
+    .nav-btn:hover {
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.5);
+    }
+    .nav-btn.active {
+      background: var(--cta);
+      color: #FFFFFF;
+      box-shadow: 0 calc(4 * var(--u)) calc(12 * var(--u)) rgba(15, 27, 49, 0.2);
+    }
+
+    /* Health Indicator Badge */
+    .health-pill {
+      display: flex;
+      align-items: center;
+      gap: calc(8 * var(--u));
+      padding: calc(8 * var(--u)) calc(16 * var(--u));
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(calc(20 * var(--u)));
+      font-size: calc(13 * var(--u));
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .status-dot {
+      width: calc(8 * var(--u));
+      height: calc(8 * var(--u));
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 calc(8 * var(--u)) var(--green);
+    }
+    .status-dot.degraded {
+      background: var(--amber);
+      box-shadow: 0 0 calc(8 * var(--u)) var(--amber);
+    }
+
+    /* Diagnostics Warning Banner */
+    .diag-banner {
+      display: none;
+      background: rgba(250, 130, 49, 0.15);
+      border-bottom: calc(1 * var(--u)) solid rgba(250, 130, 49, 0.3);
+      padding: calc(8 * var(--u)) calc(40 * var(--u));
+      font-size: calc(13 * var(--u));
+      color: #B35400;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 9;
+    }
+    .diag-banner code {
+      background: rgba(255, 255, 255, 0.6);
+      padding: calc(2 * var(--u)) calc(8 * var(--u));
+      border-radius: calc(4 * var(--u));
+      font-family: monospace;
+    }
+
+    /* Main Screen Stage */
+    .stage {
+      position: relative;
+      flex: 1;
+      padding: 0 calc(40 * var(--u)) calc(30 * var(--u)) calc(40 * var(--u));
+      z-index: 1;
+      overflow: hidden;
+    }
+
+    .screen {
+      display: none;
+      position: absolute;
+      inset: 0 calc(40 * var(--u)) calc(30 * var(--u)) calc(40 * var(--u));
+      animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    .screen.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(calc(8 * var(--u))) scale(0.995); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* Glass Cards */
+    .glass-card {
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.65) 0%, rgba(255, 255, 255, 0.35) 100%);
+      border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.85);
+      border-radius: calc(28 * var(--u));
+      backdrop-filter: blur(calc(40 * var(--u))) saturate(112%);
+      -webkit-backdrop-filter: blur(calc(40 * var(--u))) saturate(112%);
+      box-shadow: 0 calc(12 * var(--u)) calc(36 * var(--u)) rgba(28, 52, 92, 0.06),
+                  inset calc(1 * var(--u)) calc(1 * var(--u)) 0 rgba(255, 255, 255, 0.8);
+      padding: calc(30 * var(--u));
+    }
+
+    /* Buttons */
+    .btn-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: calc(12 * var(--u));
+      background: var(--cta);
+      color: #FFFFFF;
+      border: none;
+      border-radius: 999px;
+      padding: calc(14 * var(--u)) calc(26 * var(--u));
+      font-size: calc(16 * var(--u));
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 calc(8 * var(--u)) calc(20 * var(--u)) rgba(15, 27, 49, 0.2);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .btn-cta:hover {
+      transform: translateY(calc(-2 * var(--u)));
+      box-shadow: 0 calc(12 * var(--u)) calc(26 * var(--u)) rgba(15, 27, 49, 0.25);
+    }
+    .btn-cta:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: calc(8 * var(--u));
+      background: rgba(255, 255, 255, 0.6);
+      color: var(--ink);
+      border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.85);
+      border-radius: 999px;
+      padding: calc(12 * var(--u)) calc(22 * var(--u));
+      font-size: calc(15 * var(--u));
+      font-weight: 600;
+      cursor: pointer;
+      backdrop-filter: blur(calc(20 * var(--u)));
+      transition: background 0.2s ease;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    /* ---------------------------------------------------- */
+    /* Screen 1: Home                                       */
+    /* ---------------------------------------------------- */
+    .home-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: calc(30 * var(--u));
+      height: 100%;
+      align-items: center;
+    }
+    .eyebrow {
+      font-size: calc(15 * var(--u));
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: calc(12 * var(--u));
+    }
+    h1.hero-title {
+      font-size: calc(52 * var(--u));
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1.05;
+      color: var(--ink);
+      margin-bottom: calc(18 * var(--u));
+    }
+    p.hero-desc {
+      font-size: calc(17 * var(--u));
+      line-height: 1.45;
+      color: var(--muted);
+      margin-bottom: calc(28 * var(--u));
+      max-width: calc(540 * var(--u));
+    }
+    .home-actions {
+      display: flex;
+      gap: calc(16 * var(--u));
+      align-items: center;
+    }
+
+    /* ---------------------------------------------------- */
+    /* Screen 2: Session & QR                               */
+    /* ---------------------------------------------------- */
+    .session-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: calc(30 * var(--u));
+      height: 100%;
+    }
+    .qr-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    .qr-box {
+      width: calc(240 * var(--u));
+      height: calc(240 * var(--u));
+      background: #FFFFFF;
+      border-radius: calc(20 * var(--u));
+      padding: calc(16 * var(--u));
+      box-shadow: 0 calc(8 * var(--u)) calc(24 * var(--u)) rgba(15, 27, 49, 0.1);
+      margin-bottom: calc(20 * var(--u));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .qr-box img, .qr-box svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .session-id-display {
+      font-size: calc(36 * var(--u));
+      font-weight: 800;
+      letter-spacing: 0.15em;
+      color: var(--cta);
+      font-family: monospace;
+      margin-bottom: calc(8 * var(--u));
+    }
+    .join-link-box {
+      background: rgba(255, 255, 255, 0.6);
+      border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.8);
+      border-radius: calc(12 * var(--u));
+      padding: calc(10 * var(--u)) calc(16 * var(--u));
+      font-size: calc(14 * var(--u));
+      font-family: monospace;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      gap: calc(10 * var(--u));
+    }
+
+    /* ---------------------------------------------------- */
+    /* Screen 3: File Transfer                              */
+    /* ---------------------------------------------------- */
+    .transfer-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: calc(30 * var(--u));
+      height: 100%;
+    }
+    .dropzone {
+      border: calc(2 * var(--u)) dashed rgba(74, 120, 176, 0.4);
+      border-radius: calc(20 * var(--u));
+      padding: calc(30 * var(--u));
+      text-align: center;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: calc(220 * var(--u));
+      margin-bottom: calc(20 * var(--u));
+    }
+    .dropzone:hover, .dropzone.dragover {
+      background: rgba(255, 255, 255, 0.6);
+      border-color: var(--accent);
+    }
+    .progress-bar-bg {
+      width: 100%;
+      height: calc(16 * var(--u));
+      background: #DDE4EE;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: calc(16 * var(--u));
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4A78B0 0%, #20BF6B 100%);
+      border-radius: 999px;
+      transition: width 0.25s linear;
+    }
+
+    /* ---------------------------------------------------- */
+    /* Screen 4: Impairments                                */
+    /* ---------------------------------------------------- */
+    .presets-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: calc(10 * var(--u));
+      margin-bottom: calc(24 * var(--u));
+    }
+    .chip {
+      background: rgba(255, 255, 255, 0.6);
+      border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.85);
+      border-radius: 999px;
+      padding: calc(8 * var(--u)) calc(16 * var(--u));
+      font-size: calc(13.5 * var(--u));
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .chip:hover, .chip.active {
+      background: var(--cta);
+      color: #FFFFFF;
+      box-shadow: 0 calc(4 * var(--u)) calc(12 * var(--u)) rgba(15, 27, 49, 0.15);
+    }
+    .sliders-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: calc(20 * var(--u));
+      margin-bottom: calc(24 * var(--u));
+    }
+    .slider-box {
+      background: rgba(255, 255, 255, 0.4);
+      padding: calc(18 * var(--u));
+      border-radius: calc(16 * var(--u));
+    }
+    .slider-box label {
+      display: block;
+      font-size: calc(13 * var(--u));
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: calc(8 * var(--u));
+    }
+    .slider-val {
+      font-size: calc(24 * var(--u));
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: calc(10 * var(--u));
+    }
+    .slider-box input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    /* ---------------------------------------------------- */
+    /* Screen 5: Live Dashboard                             */
+    /* ---------------------------------------------------- */
+    .dash-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: calc(16 * var(--u));
+      margin-bottom: calc(20 * var(--u));
+    }
+    .stat-card {
+      background: rgba(255, 255, 255, 0.55);
+      border-radius: calc(18 * var(--u));
+      padding: calc(18 * var(--u));
+      border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.8);
+    }
+    .stat-card .stat-lbl {
+      font-size: calc(13 * var(--u));
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: calc(4 * var(--u));
+    }
+    .stat-card .stat-num {
+      font-size: calc(32 * var(--u));
+      font-weight: 800;
+      color: var(--ink);
+      letter-spacing: -0.03em;
+    }
+    .sparkline-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: calc(20 * var(--u));
+      margin-bottom: calc(20 * var(--u));
+    }
+    .spark-box {
+      background: rgba(255, 255, 255, 0.45);
+      border-radius: calc(18 * var(--u));
+      padding: calc(14 * var(--u));
+    }
+    .spark-box canvas {
+      width: 100%;
+      height: calc(90 * var(--u));
+      display: block;
+    }
+    .terminal-box {
+      background: #020C21;
+      color: #A7B4C6;
+      border-radius: calc(16 * var(--u));
+      padding: calc(14 * var(--u));
+      font-family: monospace;
+      font-size: calc(12.5 * var(--u));
+      height: calc(160 * var(--u));
+      overflow-y: auto;
+      line-height: 1.45;
+    }
+    .terminal-box .flag-syn { color: #4A78B0; font-weight: bold; }
+    .terminal-box .flag-ack { color: #20BF6B; font-weight: bold; }
+    .terminal-box .flag-ret { color: #EB3B5A; font-weight: bold; }
+    .terminal-box .flag-fin { color: #FA8231; font-weight: bold; }
+
+    /* ---------------------------------------------------- */
+    /* Screen 6: Results & Analytics                        */
+    /* ---------------------------------------------------- */
+    .results-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: calc(20 * var(--u));
+      height: 100%;
+    }
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: calc(12 * var(--u));
+      overflow-y: auto;
+      max-height: calc(480 * var(--u));
+      padding-right: calc(6 * var(--u));
+    }
+    .chart-card {
+      background: rgba(255, 255, 255, 0.5);
+      border-radius: calc(14 * var(--u));
+      padding: calc(12 * var(--u));
+      text-align: center;
+    }
+    .chart-card canvas {
+      width: 100%;
+      height: calc(110 * var(--u));
+    }
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: calc(12.5 * var(--u));
+    }
+    .results-table th, .results-table td {
+      padding: calc(8 * var(--u)) calc(10 * var(--u));
+      text-align: left;
+      border-bottom: calc(1 * var(--u)) solid rgba(28, 52, 92, 0.08);
+    }
+    .results-table th {
+      font-weight: 700;
+      color: var(--muted);
+    }
+
+    /* Client and Pair Badges */
+    .role-badge {
+      display: inline-block;
+      padding: calc(2 * var(--u)) calc(8 * var(--u));
+      border-radius: 999px;
+      font-size: calc(11 * var(--u));
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .role-badge.send {
+      background: rgba(32, 191, 107, 0.2);
+      color: #1aa35b;
+      border: calc(1 * var(--u)) solid rgba(32, 191, 107, 0.4);
+    }
+    .role-badge.receive {
+      background: rgba(74, 120, 176, 0.2);
+      color: #3d689b;
+      border: calc(1 * var(--u)) solid rgba(74, 120, 176, 0.4);
+    }
+    .role-badge.unset {
+      background: rgba(89, 98, 126, 0.15);
+      color: var(--muted);
+      border: calc(1 * var(--u)) solid rgba(89, 98, 126, 0.3);
+    }
+    .status-badge {
+      display: inline-block;
+      padding: calc(2 * var(--u)) calc(8 * var(--u));
+      border-radius: calc(6 * var(--u));
+      font-size: calc(11 * var(--u));
+      font-weight: 600;
+    }
+    .status-badge.waiting {
+      background: rgba(250, 130, 49, 0.15);
+      color: #c96218;
+    }
+    .status-badge.paired, .status-badge.ready {
+      background: rgba(32, 191, 107, 0.15);
+      color: #1aa35b;
+    }
+    .status-badge.transferring {
+      background: rgba(74, 120, 176, 0.2);
+      color: #3d689b;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="glow-blob blob-1"></div>
+    <div class="glow-blob blob-2"></div>
+
+    <!-- Diagnostic Warning Banner (if namespaces missing) -->
+    <div class="diag-banner" id="diag-banner">
+      <div>⚠️ <b>Testbed Offline:</b> Namespaces <code>ns-client</code> / <code>ns-server</code> not detected.</div>
+      <button class="btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="copySetupCmd()">Copy Setup Command</button>
+    </div>
+
+    <!-- Top Navigation -->
+    <header class="top-nav">
+      <div class="brand" onclick="showScreen('home')">
+        <svg viewBox="0 0 40 40" fill="none">
+          <circle cx="20" cy="20" r="18" stroke="#0F1B31" stroke-width="2" />
+          <path d="M13 5c3-.9 6.2-1 9.2-.1" stroke="#0F1B31" stroke-width="2" stroke-linecap="round"/>
+          <path d="M5 10c3.8-1.9 8-2.4 11.7-1.2 2.5.8 4.3 2.1 6.6 2.3 2 .2 4.2-.4 6.4-1.5" stroke="#0F1B31" stroke-width="2" stroke-linecap="round"/>
+          <path d="M2 15c4.4-2.4 9.4-3 13.6-1.5 2.4.9 4.1 2.3 6.4 2.4 2.3.1 4.7-1 7.1-2.4" stroke="#0F1B31" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="20" cy="20" r="4" fill="#4A78B0" />
+        </svg>
+        <b>NetScope</b>
+      </div>
+
+      <nav class="nav-pill">
+        <button class="nav-btn active" id="nav-home" onclick="showScreen('home')">Home</button>
+        <button class="nav-btn" id="nav-session" onclick="showScreen('session')">Session & QR</button>
+        <button class="nav-btn" id="nav-transfer" onclick="showScreen('transfer')">Transfer</button>
+        <button class="nav-btn" id="nav-impair" onclick="showScreen('impair')">Impairments</button>
+        <button class="nav-btn" id="nav-dashboard" onclick="showScreen('dashboard')">Live Dashboard</button>
+        <button class="nav-btn" id="nav-results" onclick="showScreen('results')">Analytics</button>
+      </nav>
+
+      <div class="health-pill" onclick="checkHealth()">
+        <span class="status-dot" id="health-dot"></span>
+        <span id="health-text">Checking...</span>
+      </div>
+    </header>
+
+    <!-- Main Viewport Stage -->
+    <main class="stage">
+
+      <!-- 1. HOME SCREEN -->
+      <section class="screen active" id="screen-home">
+        <div class="home-grid">
+          <div>
+            <div class="eyebrow">TCP Reliability & Emulation Platform</div>
+            <h1 class="hero-title">Smarter Network Telemetry Starts Here.</h1>
+            <p class="hero-desc">
+              High-fidelity TCP performance analysis under emulated latency, packet loss, and rate limits.
+              Powered by Linux network namespaces, <code>tc netem</code>, and deep packet inspection.
+            </p>
+            <div class="home-actions">
+              <button class="btn-cta" onclick="createOrShowSession()">
+                <span>Create Discovery Session</span>
+                <span>→</span>
+              </button>
+              <button class="btn-secondary" onclick="showScreen('impair')">Configure Impairments</button>
+              <button class="btn-secondary" onclick="showScreen('dashboard')">Live Dashboard</button>
+            </div>
+          </div>
+          <div class="glass-card">
+            <h3 style="margin-bottom: calc(14*var(--u)); font-size: calc(18*var(--u));">Emulation Architecture</h3>
+            <div style="font-size: calc(14*var(--u)); line-height: 1.6; color: var(--muted2);">
+              <p><b>• Client Node:</b> Namespace <code>ns-client</code> (10.10.0.1)</p>
+              <p><b>• Server Node:</b> Namespace <code>ns-server</code> (10.10.0.2)</p>
+              <p><b>• Virtual Link:</b> <code>veth-c &harr; veth-s</code></p>
+              <p><b>• Traffic Control:</b> Egress netem on <code>veth-c</code></p>
+              <p><b>• Packet Inspection:</b> <code>tshark</code> sniffer</p>
+            </div>
+            <div style="margin-top: calc(20*var(--u));">
+              <button class="btn-secondary" style="width: 100%;" onclick="runHealthCheckAlert()">Verify Testbed Health</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. SESSION & QR SCREEN -->
+      <section class="screen" id="screen-session">
+        <div class="session-layout">
+          <div class="glass-card qr-container">
+            <div class="eyebrow">DEVICE DISCOVERY</div>
+            <div class="session-id-display" id="disp-session-id">------</div>
+            <div class="qr-box" id="qr-display">
+              <span style="font-size: calc(13*var(--u)); color: var(--muted);">Click 'Generate Session' below</span>
+            </div>
+            <p style="font-size: calc(13.5*var(--u)); color: var(--muted); margin-bottom: calc(14*var(--u));">
+              Scan with phone camera or enter link on peer device on same Wi-Fi.
+            </p>
+            <button class="btn-cta" onclick="createSession()">Generate New Session</button>
+          </div>
+
+          <div class="glass-card" style="display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: calc(12*var(--u));">
+                <h2 style="font-size: calc(22*var(--u));">Session Topology &amp; Clients</h2>
+                <span class="chip" id="session-status-chip" style="font-size: calc(11*var(--u));">ACTIVE</span>
+              </div>
+
+              <div class="join-link-box" id="join-link-container">
+                <span id="join-link-text">http://...</span>
+                <button class="btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="copyJoinLink()">Copy</button>
+              </div>
+
+              <!-- Connected Clients Table -->
+              <div style="margin-top: calc(16*var(--u));">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: calc(6*var(--u));">
+                  <b style="font-size: calc(14*var(--u));">Connected Clients</b>
+                  <span style="font-size: calc(12*var(--u)); color: var(--muted);" id="client-count-lbl">0 connected</span>
+                </div>
+                <div style="max-height: calc(130*var(--u)); overflow-y: auto; background: rgba(255,255,255,0.45); border-radius: calc(12*var(--u)); border: 1px solid rgba(255,255,255,0.8);">
+                  <table class="results-table" id="clients-table">
+                    <thead>
+                      <tr>
+                        <th>Client</th>
+                        <th>IP</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="clients-table-body">
+                      <tr>
+                        <td colspan="4" style="text-align: center; color: var(--muted); padding: calc(12*var(--u)); font-size: calc(12*var(--u));">
+                          Waiting for peer devices to scan QR or open join link...
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Active Pairs Card -->
+              <div style="margin-top: calc(14*var(--u)); padding: calc(12*var(--u)) calc(16*var(--u)); background: rgba(255,255,255,0.5); border-radius: calc(14*var(--u)); border: 1px solid rgba(255,255,255,0.85);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: calc(4*var(--u));">
+                  <div style="display: flex; align-items: center; gap: calc(8*var(--u));">
+                    <span class="status-dot degraded" id="peer-dot"></span>
+                    <b style="font-size: calc(14*var(--u));" id="active-pair-id">Active Pair: None</b>
+                  </div>
+                  <span class="chip" id="active-pair-badge" style="padding: 2px 8px; font-size: 11px;">UNPAIRED</span>
+                </div>
+                <div id="active-pair-nodes" style="font-size: calc(12.5*var(--u)); color: var(--muted2);">
+                  Awaiting 1 SEND and 1 RECEIVE device to establish direct TCP pair.
+                </div>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: calc(14*var(--u));">
+              <span id="peer-role-text" style="font-size: calc(12.5*var(--u)); color: var(--muted);">Deterministic pairing active</span>
+              <button class="btn-cta" onclick="showScreen('transfer')">Proceed to Transfer &rarr;</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. TRANSFER SCREEN -->
+      <section class="screen" id="screen-transfer">
+        <div class="transfer-grid">
+          <div class="glass-card">
+            <h2 style="font-size: calc(24*var(--u)); margin-bottom: calc(16*var(--u));">Initiate File Transfer</h2>
+            <div style="display: flex; gap: calc(10*var(--u)); margin-bottom: calc(18*var(--u));">
+              <button class="chip active" id="chip-mode-send" onclick="setTransferMode('send')">Send File (Upload)</button>
+              <button class="chip" id="chip-mode-recv" onclick="setTransferMode('receive')">Receive File (Download)</button>
+            </div>
+
+            <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
+              <input type="file" id="file-input" style="display: none;" onchange="handleFileSelect(event)">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#4A78B0" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <b style="font-size: calc(15*var(--u)); margin-top: calc(10*var(--u));" id="selected-file-label">test_10mb.bin (10.0 MB)</b>
+              <span style="font-size: calc(12*var(--u)); color: var(--muted);" id="dropzone-hint">Drag &amp; drop any file (up to 200 MB) or click to browse</span>
+            </div>
+
+            <button class="btn-cta" id="btn-start-tx" style="width: 100%; justify-content: center;" onclick="startTransfer()">
+              Start TCP Transfer
+            </button>
+          </div>
+
+          <div class="glass-card" style="display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <h2 style="font-size: calc(24*var(--u)); margin-bottom: calc(16*var(--u));">Real-Time Transfer Telemetry</h2>
+              
+              <div style="display: flex; justify-content: space-between; align-items: baseline; margin-top: calc(20*var(--u));">
+                <span style="font-size: calc(14*var(--u)); color: var(--muted);">Progress</span>
+                <b style="font-size: calc(24*var(--u)); color: var(--cta);" id="tx-pct-label">0.0%</b>
+              </div>
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="tx-progress-bar"></div>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: calc(16*var(--u)); margin-top: calc(24*var(--u));">
+                <div class="stat-card">
+                  <div class="stat-lbl">Live Throughput</div>
+                  <div class="stat-num" id="tx-live-mbps">0.0 <span style="font-size: 14px;">Mbps</span></div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-lbl">Bytes Streamed</div>
+                  <div class="stat-num" id="tx-live-bytes">0 <span style="font-size: 14px;">MB</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="tx-result-badge" style="padding: calc(14*var(--u)); background: rgba(32, 191, 107, 0.15); border: 1px solid rgba(32, 191, 107, 0.3); border-radius: calc(14*var(--u)); display: none;">
+              <b style="color: #20BF6B;">✔ Transfer Complete</b>
+              <div style="font-size: calc(12.5*var(--u)); color: var(--muted2); margin-top: 4px;" id="tx-result-details">
+                SHA-256 integrity verified. Duration: 0.00s | Throughput: 0.0 Mbps
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. IMPAIRMENTS SCREEN -->
+      <section class="screen" id="screen-impair">
+        <div class="glass-card" style="height: 100%; display: flex; flex-direction: column; justify-content: space-between;">
+          <div>
+            <div class="eyebrow">KERNEL TRAFFIC CONTROL (TC NETEM)</div>
+            <h2 style="font-size: calc(26*var(--u)); margin-bottom: calc(16*var(--u));">Network Impairment Profiles</h2>
+
+            <div class="presets-row" id="presets-container">
+              <span style="color: var(--muted); font-size: calc(13*var(--u)); padding: 6px;">Loading scenarios from network/scenarios.json...</span>
+            </div>
+
+            <div class="sliders-grid">
+              <div class="slider-box">
+                <label>ONE-WAY DELAY</label>
+                <div class="slider-val" id="val-delay">0 ms</div>
+                <input type="range" id="range-delay" min="0" max="200" step="10" value="0" oninput="updateSliders()">
+              </div>
+              <div class="slider-box">
+                <label>PACKET LOSS</label>
+                <div class="slider-val" id="val-loss">0 %</div>
+                <input type="range" id="range-loss" min="0" max="5" step="0.5" value="0" oninput="updateSliders()">
+              </div>
+              <div class="slider-box">
+                <label>BANDWIDTH LIMIT</label>
+                <div class="slider-val" id="val-rate">Unlimited</div>
+                <input type="range" id="range-rate" min="0" max="10" step="1" value="0" oninput="updateSliders()">
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: calc(14*var(--u)); align-items: center;">
+            <button class="btn-cta" onclick="submitCustomImpairment()">Apply Impairment</button>
+            <button class="btn-secondary" onclick="clearImpairment()">Reset to Baseline (Clear)</button>
+            <span id="impair-status-msg" style="font-size: calc(14*var(--u)); color: var(--muted); margin-left: auto;">Current: Baseline</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. LIVE DASHBOARD -->
+      <section class="screen" id="screen-dashboard">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: calc(14*var(--u)); padding: calc(10*var(--u)) calc(18*var(--u)); background: rgba(255,255,255,0.6); border-radius: calc(14*var(--u)); border: calc(1*var(--u)) solid rgba(255,255,255,0.85);">
+          <div style="display: flex; gap: calc(24*var(--u)); align-items: center; font-size: calc(13*var(--u));">
+            <div><span style="color: var(--muted);">SESSION:</span> <b id="dash-session-id">--</b></div>
+            <div><span style="color: var(--muted);">ACTIVE PAIR:</span> <b id="dash-pair-summary">No active pair</b></div>
+            <div><span style="color: var(--muted);">NETWORK:</span> <b id="dash-impair-summary">Baseline</b></div>
+          </div>
+          <div>
+            <span class="chip" id="dash-status-pill" style="padding: 3px 10px; font-size: 11px;">IDLE</span>
+          </div>
+        </div>
+
+        <div class="dash-metrics">
+          <div class="stat-card">
+            <div class="stat-lbl">Handshake Duration</div>
+            <div class="stat-num" id="dash-handshake">-- <span style="font-size: 14px;">ms</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-lbl">Average RTT</div>
+            <div class="stat-num" id="dash-rtt">-- <span style="font-size: 14px;">ms</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-lbl">Retransmissions</div>
+            <div class="stat-num" id="dash-retrans" style="color: var(--amber);">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-lbl">Duplicate ACKs</div>
+            <div class="stat-num" id="dash-dupacks">0</div>
+          </div>
+        </div>
+
+        <div class="sparkline-row">
+          <div class="spark-box">
+            <div class="stat-lbl" style="margin-bottom: 6px;">RTT Progression (ms)</div>
+            <canvas id="rttCanvas"></canvas>
+          </div>
+          <div class="spark-box">
+            <div class="stat-lbl" style="margin-bottom: 6px;">Throughput Telemetry (Mbps)</div>
+            <canvas id="tpCanvas"></canvas>
+          </div>
+        </div>
+
+        <div class="stat-lbl" style="margin-bottom: calc(6*var(--u));">Live Wireshark Packet Events</div>
+        <div class="terminal-box" id="packet-log">
+          <div>[SYSTEM] Listening for TCP port 5000 packet events...</div>
+        </div>
+      </section>
+
+      <!-- 6. ANALYTICS & RESULTS -->
+      <section class="screen" id="screen-results">
+        <div class="results-layout">
+          <div class="glass-card" style="display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: calc(14*var(--u));">
+              <h3 style="font-size: calc(18*var(--u));">Multi-Scenario Benchmarks</h3>
+              <div style="display: flex; gap: calc(8*var(--u));">
+                <button class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="startSuite()">Run All (11)</button>
+                <button class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="stopSuite()">Stop</button>
+                <button class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="downloadCSV()">CSV</button>
+              </div>
+            </div>
+            <div style="flex: 1; overflow-y: auto;">
+              <table class="results-table" id="summary-table">
+                <thead>
+                  <tr>
+                    <th>Scenario</th>
+                    <th>Runs</th>
+                    <th>Duration</th>
+                    <th>Throughput</th>
+                    <th>RTT</th>
+                    <th>Retrans</th>
+                  </tr>
+                </thead>
+                <tbody id="summary-tbody">
+                  <tr><td colspan="6" style="text-align: center; color: var(--muted);">No benchmark runs yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="glass-card charts-grid" id="charts-grid">
+            <div class="chart-card">
+              <div class="stat-lbl">Delay vs RTT</div>
+              <canvas id="chart-delay-rtt"></canvas>
+            </div>
+            <div class="chart-card">
+              <div class="stat-lbl">Delay vs Completion Time</div>
+              <canvas id="chart-delay-time"></canvas>
+            </div>
+            <div class="chart-card">
+              <div class="stat-lbl">Loss vs Retransmissions</div>
+              <canvas id="chart-loss-retrans"></canvas>
+            </div>
+            <div class="chart-card">
+              <div class="stat-lbl">Loss vs Throughput</div>
+              <canvas id="chart-loss-tp"></canvas>
+            </div>
+            <div class="chart-card">
+              <div class="stat-lbl">Bandwidth vs Throughput</div>
+              <canvas id="chart-bw-tp"></canvas>
+            </div>
+            <div class="chart-card">
+              <div class="stat-lbl">Bandwidth vs Completion Time</div>
+              <canvas id="chart-bw-time"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script>
+    let currentSessionId = "";
+    let activeMode = "send";
+    let selectedFile = "tests/data/test_10mb.bin";
+    const rttHistory = [];
+    const tpHistory = [];
+
+    // Screen Switching
+    function showScreen(name) {
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      
+      const targetScreen = document.getElementById('screen-' + name);
+      const targetNav = document.getElementById('nav-' + name);
+      if (targetScreen) targetScreen.classList.add('active');
+      if (targetNav) targetNav.classList.add('active');
+
+      if (name === 'results') loadResults();
+      if (name === 'dashboard') { drawSparklines(); }
+    }
+
+    // Health & Diagnostics
+    async function checkHealth() {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        const dot = document.getElementById('health-dot');
+        const txt = document.getElementById('health-text');
+        const banner = document.getElementById('diag-banner');
+
+        if (data.netns_active && data.ping_reachable) {
+          dot.className = 'status-dot';
+          txt.innerText = 'Testbed: Ready';
+          banner.style.display = 'none';
+        } else {
+          dot.className = 'status-dot degraded';
+          txt.innerText = 'Testbed: Degraded';
+          banner.style.display = 'flex';
+        }
+      } catch (err) {
+        document.getElementById('health-text').innerText = 'Offline';
+      }
+    }
+
+    function copySetupCmd() {
+      navigator.clipboard.writeText("sudo ./network/netns_setup.sh up");
+      alert("Copied to clipboard: sudo ./network/netns_setup.sh up");
+    }
+
+    function runHealthCheckAlert() {
+      checkHealth().then(() => alert("Diagnostic verification complete. Check health indicator in upper right."));
+    }
+
+    // Session Management & QR
+    async function createSession() {
+      try {
+        const res = await fetch('/api/session', { method: 'POST' });
+        const data = await res.json();
+        currentSessionId = data.id;
+        document.getElementById('disp-session-id').innerText = data.id;
+        document.getElementById('join-link-text').innerText = data.join_url;
+        document.getElementById('qr-display').innerHTML = `<img src="/api/qr/${data.id}" alt="QR">`;
+        const dashSess = document.getElementById('dash-session-id');
+        if (dashSess) dashSess.innerText = data.id;
+        fetchSessionClients();
+      } catch (err) {
+        console.error("createSession error:", err);
+      }
+    }
+
+    async function fetchSessionClients() {
+      if (!currentSessionId) return;
+      try {
+        const [cRes, pRes] = await Promise.all([
+          fetch(`/api/session/${currentSessionId}/clients`),
+          fetch(`/api/session/${currentSessionId}/pair`)
+        ]);
+
+        if (cRes.ok) {
+          const clients = await cRes.json();
+          renderClientsTable(clients);
+        }
+
+        if (pRes.ok) {
+          const pair = await pRes.json();
+          renderActivePair(pair);
+        }
+      } catch (err) {
+        console.error("fetchSessionClients error:", err);
+      }
+    }
+
+    function renderClientsTable(clients) {
+      const tbody = document.getElementById('clients-table-body');
+      const countLbl = document.getElementById('client-count-lbl');
+      if (!tbody) return;
+
+      if (countLbl) countLbl.innerText = `${clients.length} connected`;
+
+      if (!clients || clients.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--muted); padding: calc(12*var(--u)); font-size: calc(12*var(--u));">Waiting for peer devices to scan QR or open join link...</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = clients.map(c => {
+        const role = (c.role || 'unset').toLowerCase();
+        const roleClass = role === 'send' ? 'send' : (role === 'receive' ? 'receive' : 'unset');
+        const status = (c.status || 'waiting').toLowerCase();
+        const statusClass = status === 'transferring' ? 'transferring' : (status === 'paired' || status === 'ready' ? 'paired' : 'waiting');
+
+        return `<tr>
+          <td><b>${escapeHtml(c.client_name)}</b></td>
+          <td style="font-family: monospace; font-size: calc(11.5*var(--u));">${escapeHtml(c.ip_address)}</td>
+          <td><span class="role-badge ${roleClass}">${role.toUpperCase()}</span></td>
+          <td><span class="status-badge ${statusClass}">${status.toUpperCase()}</span></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderActivePair(pair) {
+      const pairIdEl = document.getElementById('active-pair-id');
+      const pairBadge = document.getElementById('active-pair-badge');
+      const nodesEl = document.getElementById('active-pair-nodes');
+      const peerDot = document.getElementById('peer-dot');
+      const dashPair = document.getElementById('dash-pair-summary');
+      const dashPill = document.getElementById('dash-status-pill');
+
+      if (pair && pair.pair_id) {
+        if (pairIdEl) pairIdEl.innerText = `Active Pair: ${pair.pair_id}`;
+        if (pairBadge) {
+          pairBadge.innerText = (pair.status || 'PAIRED').toUpperCase();
+          pairBadge.className = `chip ${pair.status === 'transferring' ? 'active' : ''}`;
+        }
+        if (peerDot) peerDot.className = 'status-dot';
+        if (nodesEl) nodesEl.innerHTML = `<b>${escapeHtml(pair.sender_name)}</b> (Sender) &nbsp;&rarr;&nbsp; <b>${escapeHtml(pair.receiver_name)}</b> (Receiver)`;
+
+        if (dashPair) dashPair.innerText = `${pair.pair_id} (${pair.sender_name} → ${pair.receiver_name})`;
+        if (dashPill) dashPill.innerText = (pair.status || 'PAIRED').toUpperCase();
+      } else {
+        if (pairIdEl) pairIdEl.innerText = 'Active Pair: None';
+        if (pairBadge) {
+          pairBadge.innerText = 'UNPAIRED';
+          pairBadge.className = 'chip';
+        }
+        if (peerDot) peerDot.className = 'status-dot degraded';
+        if (nodesEl) nodesEl.innerText = 'Awaiting 1 SEND and 1 RECEIVE device to establish direct TCP pair.';
+
+        if (dashPair) dashPair.innerText = 'No active pair';
+        if (dashPill) dashPill.innerText = 'WAITING';
+      }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+    }
+
+    function createOrShowSession() {
+      showScreen('session');
+      if (!currentSessionId) createSession();
+    }
+
+    function copyJoinLink() {
+      const link = document.getElementById('join-link-text').innerText;
+      navigator.clipboard.writeText(link);
+      alert('Join URL copied: ' + link);
+    }
+
+    // Transfer Screen Logic
+    function setTransferMode(mode) {
+      activeMode = mode;
+      document.getElementById('chip-mode-send').classList.toggle('active', mode === 'send');
+      document.getElementById('chip-mode-recv').classList.toggle('active', mode === 'receive');
+    }
+
+    function handleFileSelect(event) {
+      const file = event.target.files && event.target.files[0];
+      if (file) uploadCustomFile(file);
+    }
+
+    async function uploadCustomFile(file) {
+      if (!file) return;
+      if (file.size > 200 * 1024 * 1024) {
+        alert("File exceeds maximum allowed size of 200 MB.");
+        return;
+      }
+      const label = document.getElementById('selected-file-label');
+      const hint = document.getElementById('dropzone-hint');
+      const prevText = label.innerText;
+      label.innerText = `Uploading ${file.name}...`;
+      hint.innerText = `Uploading ${(file.size / (1024 * 1024)).toFixed(2)} MB to server...`;
+
+      const fd = new FormData();
+      fd.append('file', file);
+
+      try {
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: fd
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || "Upload failed");
+        }
+        const data = await res.json();
+        selectedFile = data.path;
+        label.innerText = `${data.filename} (${data.size_mb} MB)`;
+        hint.innerText = "✔ Ready for TCP transfer (saved in results/uploads/)";
+      } catch (err) {
+        alert("Upload error: " + err.message);
+        label.innerText = prevText;
+        hint.innerText = "Drag & drop any file (up to 200 MB) or click to browse";
+      }
+    }
+
+    async function startTransfer() {
+      const btn = document.getElementById('btn-start-tx');
+      btn.disabled = true;
+      btn.innerText = 'Transferring...';
+      document.getElementById('tx-result-badge').style.display = 'none';
+
+      try {
+        const res = await fetch('/api/transfer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: activeMode, file: selectedFile, scenario: 'Interactive' })
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Error: ' + err.detail);
+          btn.disabled = false;
+          btn.innerText = 'Start TCP Transfer';
+        }
+      } catch (e) {
+        alert('Failed to start transfer: ' + e);
+        btn.disabled = false;
+        btn.innerText = 'Start TCP Transfer';
+      }
+    }
+
+    // Dynamic Impairment Presets & Sliders (from network/scenarios.json)
+    let SCENARIOS = {};
+
+    async function loadScenarios() {
+      try {
+        const res = await fetch('/api/scenarios');
+        const list = await res.json();
+        const container = document.getElementById('presets-container');
+        if (!container) return;
+        container.innerHTML = '';
+        SCENARIOS = {};
+
+        list.forEach(sc => {
+          SCENARIOS[sc.name] = sc;
+          const btn = document.createElement('button');
+          btn.className = `chip ${sc.name === 'Baseline' ? 'active' : ''}`;
+
+          let hint = '';
+          if (sc.name.startsWith('Delay-')) hint = ` (${sc.delay})`;
+          else if (sc.name.startsWith('Loss-')) hint = ` (${sc.loss})`;
+          else if (sc.name.startsWith('Bandwidth-')) hint = ` (${sc.bandwidth})`;
+          else if (sc.name === 'Combined') hint = ' (100ms+2%+5M)';
+
+          btn.innerText = sc.name + hint;
+          btn.onclick = () => applyPreset(sc.name);
+          container.appendChild(btn);
+        });
+      } catch (err) {
+        console.error("Failed to load /api/scenarios:", err);
+      }
+    }
+
+    function applyPreset(name) {
+      document.querySelectorAll('#presets-container .chip').forEach(c => {
+        c.classList.toggle('active', c.innerText.startsWith(name));
+      });
+      const sc = SCENARIOS[name];
+      if (!sc) return;
+
+      const dNum = parseInt(sc.delay) || 0;
+      const lNum = parseFloat(sc.loss) || 0;
+      const rVal = sc.bandwidth || sc.rate || "Unlimited";
+      const rNum = (rVal.toLowerCase() === "unlimited") ? 0 : (parseInt(rVal) || 0);
+
+      document.getElementById('range-delay').value = dNum;
+      document.getElementById('range-loss').value = lNum;
+      document.getElementById('range-rate').value = rNum;
+      updateSliders();
+      submitCustomImpairment(name);
+    }
+
+    function updateSliders() {
+      const d = document.getElementById('range-delay').value;
+      const l = document.getElementById('range-loss').value;
+      const r = document.getElementById('range-rate').value;
+
+      document.getElementById('val-delay').innerText = d + " ms";
+      document.getElementById('val-loss').innerText = l + " %";
+      document.getElementById('val-rate').innerText = (r === "0") ? "Unlimited" : r + " Mbps";
+    }
+
+    async function submitCustomImpairment(profileLabel) {
+      const d = document.getElementById('range-delay').value + "ms";
+      const l = document.getElementById('range-loss').value + "%";
+      const rVal = document.getElementById('range-rate').value;
+      const r = (rVal === "0") ? "Unlimited" : rVal + "mbit";
+
+      const res = await fetch('/api/impair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delay: d, loss: l, rate: r })
+      });
+      if (res.ok) {
+        document.getElementById('impair-status-msg').innerText = `Active: ${profileLabel} (Delay ${d}, Loss ${l}, Rate ${r})`;
+      } else {
+        alert("Failed to apply impairment. Verify sudo permissions.");
+      }
+    }
+
+    async function clearImpairment() {
+      await fetch('/api/impair', { method: 'DELETE' });
+      document.getElementById('range-delay').value = 0;
+      document.getElementById('range-loss').value = 0;
+      document.getElementById('range-rate').value = 0;
+      updateSliders();
+      document.getElementById('impair-status-msg').innerText = "Active: Baseline (No impairments)";
+      document.querySelectorAll('#presets-container .chip').forEach(c => {
+        c.classList.toggle('active', c.innerText.startsWith('Baseline'));
+      });
+    }
+
+    // Dashboard Sparklines
+    function drawSparkline(canvasId, values, color) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width = canvas.parentElement.clientWidth;
+      const h = canvas.height = canvas.parentElement.clientHeight - 20;
+
+      ctx.clearRect(0, 0, w, h);
+      if (values.length < 2) return;
+
+      const maxVal = Math.max(...values, 10);
+      const minVal = Math.min(...values, 0);
+
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+
+      values.forEach((val, i) => {
+        const x = (i / (values.length - 1)) * w;
+        const y = h - ((val - minVal) / (maxVal - minVal || 1)) * (h - 10) - 5;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    function drawSparklines() {
+      drawSparkline('rttCanvas', rttHistory, '#4A78B0');
+      drawSparkline('tpCanvas', tpHistory, '#20BF6B');
+    }
+
+    // Results & Benchmarks
+    async function loadResults() {
+      try {
+        const res = await fetch('/api/summary');
+        let rows = await res.json();
+        const tbody = document.getElementById('summary-tbody');
+        tbody.innerHTML = '';
+
+        if (!rows || rows.length === 0) {
+          // If summary is empty, check raw /api/results
+          const rawRes = await fetch('/api/results');
+          const rawRows = await rawRes.json();
+          if (rawRows && rawRows.length > 0) {
+            renderCharts(rawRows);
+            rawRows.forEach(r => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td><b>${r.scenario || 'Transfer'}</b></td>
+                <td>1</td>
+                <td>${r.transfer_time_s || r.completion_s || '--'} s</td>
+                <td>${r.throughput_mbps || '--'} Mbps</td>
+                <td>${(r.tcp && r.tcp.rtt_avg_ms) || '--'} ms</td>
+                <td>${(r.tcp && r.tcp.retransmissions) || '0'}</td>
+              `;
+              tbody.appendChild(tr);
+            });
+            return;
+          }
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--muted);">No benchmark runs logged yet.</td></tr>';
+          return;
+        }
+
+        rows.forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><b>${r.scenario}</b></td>
+            <td>${r.runs}</td>
+            <td>${r.completion_s_mean || '--'} s</td>
+            <td>${r.throughput_mbps_mean || '--'} Mbps</td>
+            <td>${r.rtt_avg_ms_mean || '--'} ms</td>
+            <td>${r.retransmissions_mean || '0'}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        renderCharts(rows);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderCharts(rows) {
+      // All 6 required charts driven by results/transfers.jsonl
+      drawBarChart('chart-delay-rtt', rows.filter(r => (r.scenario||'').includes('Delay') || r.scenario === 'Baseline'), 'rtt_avg_ms', '#4A78B0', 'ms');
+      drawBarChart('chart-delay-time', rows.filter(r => (r.scenario||'').includes('Delay') || r.scenario === 'Baseline'), 'completion_s', '#384B64', 's');
+      drawBarChart('chart-loss-retrans', rows.filter(r => (r.scenario||'').includes('Loss') || r.scenario === 'Baseline'), 'retransmissions', '#EB3B5A', '');
+      drawBarChart('chart-loss-tp', rows.filter(r => (r.scenario||'').includes('Loss') || r.scenario === 'Baseline'), 'throughput_mbps', '#20BF6B', 'Mbps');
+      drawBarChart('chart-bw-tp', rows.filter(r => (r.scenario||'').includes('Bandwidth') || r.scenario === 'Baseline'), 'throughput_mbps', '#78A6D8', 'Mbps');
+      drawBarChart('chart-bw-time', rows.filter(r => (r.scenario||'').includes('Bandwidth') || r.scenario === 'Baseline'), 'completion_s', '#FA8231', 's');
+    }
+
+    function drawBarChart(canvasId, items, key, color, unit = '') {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width = canvas.parentElement.clientWidth;
+      const h = canvas.height = canvas.parentElement.clientHeight - 20;
+
+      ctx.clearRect(0, 0, w, h);
+      if (!items || items.length === 0) {
+        ctx.fillStyle = '#59627E';
+        ctx.font = '11px sans-serif';
+        ctx.fillText('No data', w / 2 - 20, h / 2);
+        return;
+      }
+
+      const getVal = (it) => {
+        if (it[key + '_mean'] !== undefined && it[key + '_mean'] !== null) return Number(it[key + '_mean']);
+        if (it[key] !== undefined && it[key] !== null) return Number(it[key]);
+        if (key.includes('completion') && it.transfer_time_s !== undefined) return Number(it.transfer_time_s);
+        if (key.includes('completion') && it.completion_s !== undefined) return Number(it.completion_s);
+        if (key.includes('throughput') && it.throughput_mbps !== undefined) return Number(it.throughput_mbps);
+        if (key.includes('rtt') && it.tcp && it.tcp.rtt_avg_ms !== undefined) return Number(it.tcp.rtt_avg_ms);
+        if (key.includes('retrans') && it.tcp && it.tcp.retransmissions !== undefined) return Number(it.tcp.retransmissions);
+        return 0;
+      };
+
+      const maxVal = Math.max(...items.map(it => getVal(it)), 0.1);
+      const barWidth = Math.max(14, Math.floor(w / (items.length * 2)));
+
+      items.forEach((it, idx) => {
+        const val = getVal(it);
+        const barH = Math.max(3, (val / maxVal) * (h - 32));
+        const x = idx * (barWidth * 2) + barWidth / 2;
+        const y = h - barH - 16;
+
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, barWidth, barH);
+
+        // Value text above bar
+        ctx.fillStyle = '#E6EDF6';
+        ctx.font = '9px monospace';
+        const displayVal = val >= 100 ? Math.round(val) : val.toFixed(1);
+        ctx.fillText(displayVal, x - 2, Math.max(10, y - 4));
+
+        // Label below bar
+        ctx.fillStyle = '#59627E';
+        ctx.font = '10px monospace';
+        const scName = (it.scenario || '')
+          .replace('Bandwidth-', 'BW-')
+          .replace('Delay-', 'D-')
+          .replace('Loss-', 'L-');
+        ctx.fillText(scName, x - 4, h - 2);
+      });
+    }
+
+    function startSuite() {
+      fetch('/api/experiments/start?repeats=3', { method: 'POST' });
+      alert("11-scenario benchmark suite started in background!");
+    }
+
+    function stopSuite() {
+      fetch('/api/experiments/stop', { method: 'POST' });
+      alert("Benchmark suite cancelled.");
+    }
+
+    function downloadCSV() {
+      window.location.href = '/results/summary.csv';
+    }
+
+    // SSE Event Listener
+    function initSSE() {
+      const es = new EventSource('/api/events');
+      es.onmessage = function(ev) {
+        try {
+          const packet = JSON.parse(ev.data);
+          if (packet.type === 'heartbeat') return;
+
+          // 1. Session Topology & Client/Pair Events
+          if (packet.type === 'peer_joined' || packet.type === 'CLIENT_JOINED' ||
+              packet.type === 'ROLE_SELECTED' || packet.type === 'PAIR_CREATED' ||
+              packet.type === 'CLIENT_LEFT' || packet.type === 'SESSION_CREATED') {
+            fetchSessionClients();
+          }
+
+          // 2. Transfer Progress
+          if (packet.type === 'transfer_progress' || packet.type === 'TRANSFER_PROGRESS') {
+            const d = packet.data || {};
+            const pct = d.pct !== undefined ? d.pct : (d.progress_pct !== undefined ? d.progress_pct : 0);
+            const mbps = d.mbps !== undefined ? d.mbps : (d.throughput_mbps !== undefined ? d.throughput_mbps : 0);
+            const rawBytes = d.bytes !== undefined ? d.bytes : (d.bytes_transferred !== undefined ? d.bytes_transferred : 0);
+            const bytesMb = (rawBytes / (1024 * 1024)).toFixed(2);
+
+            document.getElementById('tx-pct-label').innerText = pct + '%';
+            document.getElementById('tx-progress-bar').style.width = pct + '%';
+            document.getElementById('tx-live-mbps').innerHTML = `${mbps} <span style="font-size:14px;">Mbps</span>`;
+            document.getElementById('tx-live-bytes').innerHTML = `${bytesMb} <span style="font-size:14px;">MB</span>`;
+
+            tpHistory.push(mbps);
+            if (tpHistory.length > 30) tpHistory.shift();
+            drawSparklines();
+          }
+
+          // 3. Transfer Complete
+          if (packet.type === 'transfer_complete' || packet.type === 'TRANSFER_COMPLETED') {
+            const btn = document.getElementById('btn-start-tx');
+            if (btn) {
+              btn.disabled = false;
+              btn.innerText = 'Start TCP Transfer';
+            }
+
+            const badge = document.getElementById('tx-result-badge');
+            const details = document.getElementById('tx-result-details');
+            const rec = packet.data.record || packet.data || {};
+            const tcp = packet.data.tcp || rec.tcp || {};
+
+            if (badge) badge.style.display = 'block';
+            if (details) {
+              const compS = rec.completion_s || rec.completion_time || 0;
+              const tp = rec.throughput_mbps || rec.throughput || 0;
+              const shaOk = rec.sha256_ok !== undefined ? rec.sha256_ok : (rec.sha256_match !== undefined ? rec.sha256_match : true);
+              details.innerText = `Duration: ${compS}s | Throughput: ${tp} Mbps | SHA-256: ${shaOk ? 'MATCHED' : 'MISMATCH'}`;
+            }
+
+            if (tcp.handshake_ms) document.getElementById('dash-handshake').innerHTML = `${tcp.handshake_ms} <span style="font-size:14px;">ms</span>`;
+            if (tcp.rtt_avg_ms || tcp.rtt) {
+              const rttVal = tcp.rtt_avg_ms || tcp.rtt;
+              document.getElementById('dash-rtt').innerHTML = `${rttVal} <span style="font-size:14px;">ms</span>`;
+              rttHistory.push(rttVal);
+              if (rttHistory.length > 30) rttHistory.shift();
+            }
+            if (tcp.retransmissions !== undefined) document.getElementById('dash-retrans').innerText = tcp.retransmissions;
+            if (tcp.duplicate_acks !== undefined) document.getElementById('dash-dupacks').innerText = tcp.duplicate_acks;
+
+            drawSparklines();
+            fetchSessionClients();
+          }
+
+          // 4. Packet Events
+          if (packet.type === 'packet_event') {
+            const logBox = document.getElementById('packet-log');
+            const d = packet.data;
+            const flagClass = `flag-${d.flag.toLowerCase().replace('-', '')}`;
+            const timeStr = new Date(d.time * 1000).toISOString().substr(14, 9);
+            const line = document.createElement('div');
+            line.innerHTML = `[${timeStr}] <span class="${flagClass}">[${d.flag}]</span> ${d.info}`;
+            logBox.appendChild(line);
+            logBox.scrollTop = logBox.scrollHeight;
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+    }
+
+    // Init on Load
+    window.addEventListener('DOMContentLoaded', () => {
+      checkHealth();
+      initSSE();
+      loadScenarios();
+      createSession();
+
+      // Configure drag-and-drop on dropzone
+      const dz = document.getElementById('dropzone');
+      if (dz) {
+        dz.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          dz.style.borderColor = 'var(--cta)';
+          dz.style.background = 'rgba(74, 120, 176, 0.15)';
+        });
+        dz.addEventListener('dragleave', (e) => {
+          e.preventDefault();
+          dz.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+          dz.style.background = 'rgba(255, 255, 255, 0.03)';
+        });
+        dz.addEventListener('drop', (e) => {
+          e.preventDefault();
+          dz.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+          dz.style.background = 'rgba(255, 255, 255, 0.03)';
+          if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            uploadCustomFile(e.dataTransfer.files[0]);
+          }
+        });
+      }
+
+      // Register service worker if supported
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      }
+    });
+  </script>
+</body>
+</html>
