@@ -72,6 +72,8 @@ class SessionInfo(BaseModel):
     created_at: str
     clients: Dict[str, ClientInfo] = Field(default_factory=dict)
     active_pair: Optional[PairInfo] = None
+    uploaded_file: Optional[str] = None  # Absolute path to the sender-uploaded file for this session
+    sender_file_path: Optional[str] = None
 
 
 class ClientJoinRequest(BaseModel):
@@ -92,9 +94,10 @@ class ImpairRequest(BaseModel):
 
 class TransferRequest(BaseModel):
     mode: str = "send"
-    file: Optional[str] = "tests/data/test_10mb.bin"
+    file: Optional[str] = None
     scenario: Optional[str] = "Manual"
     pair_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class TransferProgressReport(BaseModel):

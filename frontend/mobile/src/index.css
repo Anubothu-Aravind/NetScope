@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#080C14] text-slate-100 font-sans antialiased min-h-screen selection:bg-cyan-500/30 selection:text-cyan-200;
+  }
+}
+
+@keyframes packetMoveLTR {
+  0% {
+    left: -15px;
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  85% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  100% {
+    left: calc(100% + 15px);
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes packetMoveRTL {
+  0% {
+    left: calc(100% + 15px);
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  85% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  100% {
+    left: -15px;
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+.animate-packet-ltr {
+  animation: packetMoveLTR 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-packet-rtl {
+  animation: packetMoveRTL 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}

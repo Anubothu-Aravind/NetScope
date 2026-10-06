@@ -50,11 +50,11 @@ class Sniffer:
         """Launch tshark in background and wait until capture is active."""
         os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
 
-        # Ensure the output file is writable by root (tshark runs as root via sudo).
-        # Pre-create the file and chmod it so tshark can overwrite it.
+        # Remove existing file if present so tshark creates it freshly as root without
+        # tripping Linux kernel fs.protected_regular security checks in world-writable dirs.
         try:
-            open(self.out_path, "wb").close()
-            os.chmod(self.out_path, 0o666)
+            if os.path.exists(self.out_path):
+                os.remove(self.out_path)
         except OSError:
             pass
 
@@ -116,24 +116,17 @@ class Sniffer:
     def _find_tshark_pid(self) -> Optional[int]:
         """
         Locate the tshark PID (running as root) so we can stop it via tshark_stop.sh.
-        Match on the unique pcap output path to avoid hitting unrelated tshark instances.
+        Match exact binary name tshark to avoid wrapper processes.
         """
         try:
-            # Try matching on the specific output file path first (most unique)
             result = subprocess.run(
-                ["pgrep", "-f", os.path.basename(self.out_path)],
+                ["pgrep", "-x", "tshark"],
                 capture_output=True, text=True
             )
             pids = [int(p) for p in result.stdout.strip().splitlines() if p.strip().isdigit()]
             if pids:
-                return pids[0]
-            # Fallback: match by interface name
-            result2 = subprocess.run(
-                ["pgrep", "-f", f"tshark.*{self.iface}"],
-                capture_output=True, text=True
-            )
-            pids2 = [int(p) for p in result2.stdout.strip().splitlines() if p.strip().isdigit()]
-            return pids2[0] if pids2 else None
+                return pids[-1]
+            return None
         except Exception:
             return None
 
@@ -160,7 +153,7 @@ class Sniffer:
                 stop_script = self._stop_script()
                 if pid and os.path.isfile(stop_script):
                     print(f"[SNIFFER] Stopping tshark (PID {pid}) via {stop_script}...")
-                    subprocess.run(["sudo", "-n", stop_script, str(pid)], check=False)
+                    subprocess.run(["sudo", "-n", stop_script, str(pid)], check=False, timeout=3.0)
                 else:
                     print(f"[SNIFFER] tshark PID/script not found; SIGINT to wrapper PID {self.process.pid}...")
                     self.process.send_signal(signal.SIGINT)
@@ -169,14 +162,23 @@ class Sniffer:
                 self.process.send_signal(signal.SIGINT)
 
             try:
-                self.process.wait(timeout=8.0)
+                self.process.communicate(timeout=4.0)
             except subprocess.TimeoutExpired:
-                print("[SNIFFER WARNING] tshark did not exit in 8s. Terminating...")
+                print("[SNIFFER WARNING] tshark did not exit in 4s. Terminating...")
                 self.process.kill()
-                self.process.wait()
+                self.process.communicate()
 
         # Give the OS a moment to flush the file
         time.sleep(0.5)
+
+        if os.path.isfile(self.out_path):
+            try:
+                os.chmod(self.out_path, 0o666)
+            except OSError:
+                pass
+            if self.ns:
+                nsrun = self._get_nsrun()
+                subprocess.run(["sudo", "-n", nsrun, self.ns, "chmod", "666", self.out_path], check=False)
 
         exists = os.path.isfile(self.out_path) and os.path.getsize(self.out_path) > 0
         if exists:

@@ -172,6 +172,77 @@ class TestRemoteAccessSecurity(unittest.TestCase):
         status, body = self.make_request("/", remote_ip=remote_ip)
         self.assertEqual(status, 403, f"Expected 403 for /, got {status}")
 
+    def test_available_role_and_exclusivity(self):
+        """Verify GET available-role and role exclusivity (400 if taken)."""
+        from app.session_manager import session_manager
+        sess = session_manager.create_session("192.168.1.50")
+        sid = "ROLETEST1"
+        sess.session_id = sid
+        session_manager.sessions[sid] = sess
+        remote_ip = "192.168.1.188"
+
+        # 1. Both available initially
+        status, body = self.make_request(f"/api/session/{sid}/available-role", remote_ip=remote_ip)
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertCountEqual(data["available"], ["sender", "receiver"])
+
+        # 2. Register Sender
+        status, body = self.make_request(
+            f"/api/session/{sid}/clients",
+            method="POST",
+            data={"client_name": "Mobile-A", "role": "sender"},
+            remote_ip=remote_ip
+        )
+        self.assertEqual(status, 200)
+
+        # 3. Only Receiver available now
+        status, body = self.make_request(f"/api/session/{sid}/available-role", remote_ip=remote_ip)
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["available"], ["receiver"])
+
+        # 4. Attempt duplicate Sender -> expect 400
+        req_dup_sender = urllib.request.Request(
+            f"{BASE_URL}/api/session/{sid}/clients",
+            data=json.dumps({"client_name": "Mobile-B", "role": "sender"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Forwarded-For": remote_ip},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req_dup_sender) as resp:
+                self.fail(f"Expected 400 for duplicate sender, got {resp.status}")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+
+        # 5. Register Receiver -> expect 200
+        status, body = self.make_request(
+            f"/api/session/{sid}/clients",
+            method="POST",
+            data={"client_name": "Mobile-C", "role": "receiver"},
+            remote_ip=remote_ip
+        )
+        self.assertEqual(status, 200)
+
+        # 6. Both taken -> available: []
+        status, body = self.make_request(f"/api/session/{sid}/available-role", remote_ip=remote_ip)
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["available"], [])
+
+        # 7. Attempt third client -> expect 400
+        req_third = urllib.request.Request(
+            f"{BASE_URL}/api/session/{sid}/clients",
+            data=json.dumps({"client_name": "Mobile-D", "role": "receiver"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Forwarded-For": remote_ip},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req_third) as resp:
+                self.fail(f"Expected 400 for third client in full session, got {resp.status}")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

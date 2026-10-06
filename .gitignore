@@ -11,6 +11,8 @@ env/
 # Test data and temporary transfer files
 tests/data/
 results/pcaps/
+results/uploads/
+results/server_storage/
 *.bin
 *.tmp
 *.pcap

@@ -48,6 +48,10 @@ class TestEndToEndWorkflow(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.data_port = 5065
 
+        from app.pairing_manager import pairing_manager
+        pairing_manager._pair_counter = 1
+        pairing_manager.pairs.clear()
+
         # Generate a test payload (1 MB)
         self.test_file = os.path.join(self.tmp_dir.name, "e2e_payload.bin")
         self.payload_bytes = os.urandom(1024 * 1024)

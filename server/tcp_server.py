@@ -18,7 +18,19 @@ import time
 import socket
 import argparse
 import threading
+import base64
+import hashlib
 from typing import Dict, Any
+
+from cryptography.fernet import Fernet
+
+# In-memory dictionary storing encryption keys by run_id
+ENCRYPTION_KEYS: Dict[str, bytes] = {}
+
+def get_fernet_key(run_id: str) -> bytes:
+    """Derive a deterministic Fernet key (32 URL-safe base64 bytes) from run_id."""
+    digest = hashlib.sha256(run_id.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest)
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -155,6 +167,22 @@ class TCPServer:
             print(f"    - Throughput: {throughput_mbps:.2f} Mbps")
             print(f"    - SHA-256 match: {sha256_ok} ({actual_sha256[:12]}...)")
 
+            # Encrypt file in place using Fernet key derived from run_id
+            run_id = req.get("run_id")
+            if run_id:
+                try:
+                    fkey = get_fernet_key(run_id)
+                    ENCRYPTION_KEYS[run_id] = fkey
+                    cipher = Fernet(fkey)
+                    with open(dest_path, "rb") as f:
+                        plaintext_data = f.read()
+                    ciphertext_data = cipher.encrypt(plaintext_data)
+                    with open(dest_path, "wb") as f:
+                        f.write(ciphertext_data)
+                    print(f"    - Encrypted in place with Fernet (run_id: {run_id})")
+                except Exception as enc_err:
+                    print(f"[!] Warning: failed to encrypt file: {enc_err}")
+
             send_msg(conn, {
                 "type": "DONE",
                 "sha256_ok": sha256_ok,
@@ -182,7 +210,22 @@ class TCPServer:
             })
             return
 
-        file_size = os.path.getsize(target_path)
+        with open(target_path, "rb") as f:
+            raw_data = f.read()
+
+        file_size = len(raw_data)
+        try:
+            if raw_data.startswith(b"gAAAAA"):
+                for k in list(ENCRYPTION_KEYS.values()):
+                    try:
+                        decrypted = Fernet(k).decrypt(raw_data)
+                        file_size = len(decrypted)
+                        break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         sha256_hash = compute_sha256(target_path)
 
         print(f"[*] Preparing RECV_REQUEST: file='{filename}', size={file_size} bytes ({file_size / (1024*1024):.2f} MB)")

@@ -18,12 +18,20 @@ import time
 import uuid
 import socket
 import asyncio
+import re
 import subprocess
+import base64
+import hashlib
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from cryptography.fernet import Fernet
+from fastapi import (
+    FastAPI, Request, BackgroundTasks, HTTPException,
+    UploadFile, File, WebSocket, WebSocketDisconnect
+)
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -64,7 +72,38 @@ def get_script_path(script_name: str) -> str:
         return opt_path
     return os.path.join(PROJECT_ROOT, "network", script_name)
 
-app = FastAPI(title="NetScope Control Center")
+def cleanup_old_server_storage(max_age_seconds: int = 300):
+    """Delete files in results/server_storage older than 5 minutes."""
+    storage_dir = os.path.join(PROJECT_ROOT, "results", "server_storage")
+    if not os.path.isdir(storage_dir):
+        return
+    now = time.time()
+    for fn in os.listdir(storage_dir):
+        fp = os.path.join(storage_dir, fn)
+        if os.path.isfile(fp):
+            try:
+                if now - os.path.getmtime(fp) > max_age_seconds:
+                    os.remove(fp)
+            except Exception:
+                pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Background task that runs periodically to delete files older than 5 minutes."""
+    task = None
+    async def _loop():
+        while True:
+            await asyncio.sleep(60)
+            cleanup_old_server_storage(300)
+
+    task = asyncio.create_task(_loop())
+    yield
+    if task:
+        task.cancel()
+
+
+app = FastAPI(title="NetScope Control Center", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,9 +144,13 @@ async def restrict_remote_access(request: Request, call_next):
             is_allowed = True
         elif path.startswith("/api/session/"):
             is_allowed = True
+        elif path.startswith("/api/ws"):
+            is_allowed = True
+        elif method == "GET" and path.startswith("/api/download/"):
+            is_allowed = True
         elif method == "GET" and path.startswith("/api/qr/"):
             is_allowed = True
-        elif method == "GET" and path in ("/manifest.json", "/icon.svg", "/sw.js", "/favicon.ico"):
+        elif method == "GET" and (path in ("/manifest.json", "/icon.svg", "/sw.js", "/favicon.ico") or path.startswith("/assets/")):
             is_allowed = True
 
         if not is_allowed:
@@ -145,11 +188,119 @@ CURRENT_IMPAIRMENT = {
     "rate": "Unlimited"
 }
 
+# Live packet stream and cursor state
+CURRENT_PACKETS: List[Dict[str, Any]] = []
+_PACKET_CURSORS: Dict[str, int] = {}
+
 # Experiment background task handle
 ACTIVE_EXPERIMENT: Optional[subprocess.Popen] = None
 
 # Background TCP Server handle
 SERVER_PROCESS: Optional[subprocess.Popen] = None
+
+
+def get_kernel_tcp_stats(port: int = 5000, ns: Optional[str] = None) -> Dict[str, Any]:
+    cmd = ["ss", "-tin", f"( sport = :{port} or dport = :{port} )"]
+    if ns:
+        nsrun = "/opt/netscope/nsrun.sh"
+        if not os.path.isfile(nsrun):
+            nsrun = os.path.join(PROJECT_ROOT, "network", "nsrun.sh")
+        if os.path.isfile(nsrun):
+            cmd = ["sudo", "-n", nsrun, ns] + cmd
+        else:
+            cmd = ["sudo", "-n", "ip", "netns", "exec", ns] + cmd
+
+    stats = {"rtt": 0.0, "cwnd": 0, "retrans": 0}
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1.0)
+        if proc.returncode == 0 and proc.stdout:
+            out = proc.stdout
+            rtt_m = re.search(r"\brtt:([0-9.]+)", out)
+            if rtt_m:
+                stats["rtt"] = float(rtt_m.group(1))
+            cwnd_m = re.search(r"\bcwnd:(\d+)", out)
+            if cwnd_m:
+                stats["cwnd"] = int(cwnd_m.group(1))
+            ret_m = re.search(r"\bretrans:(\d+)/(\d+)", out)
+            if ret_m:
+                stats["retrans"] = int(ret_m.group(2))
+    except Exception:
+        pass
+    return stats
+
+
+def extract_pcap_packets(pcap_path: str, port: int = 5000, limit: int = 200) -> List[Dict[str, Any]]:
+    if not os.path.isfile(pcap_path) or os.path.getsize(pcap_path) == 0:
+        return []
+    fields = [
+        "-e", "frame.number",
+        "-e", "frame.time_relative",
+        "-e", "ip.src",
+        "-e", "ip.dst",
+        "-e", "tcp.srcport",
+        "-e", "tcp.dstport",
+        "-e", "tcp.flags.str",
+        "-e", "tcp.seq",
+        "-e", "tcp.ack",
+        "-e", "frame.len",
+        "-e", "tcp.analysis.retransmission",
+        "-e", "tcp.analysis.duplicate_ack",
+        "-e", "_ws.col.Info",
+    ]
+    cmd = [
+        "tshark", "-r", "-", "-Y", f"tcp.port == {port}",
+        "-T", "fields", "-E", "separator=\t", "-E", "occurrence=f"
+    ] + fields
+    try:
+        with open(pcap_path, "rb") as f:
+            proc = subprocess.run(cmd, stdin=f, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3.0)
+        lines = [ln for ln in proc.stdout.strip().split("\n") if ln.strip()]
+        if not lines:
+            return []
+        if len(lines) > limit:
+            lines = lines[-limit:]
+        pkts = []
+        for line in lines:
+            parts = line.split("\t")
+            if len(parts) < 13:
+                parts.extend([""] * (13 - len(parts)))
+            raw_flags = parts[6]
+            if "S" in raw_flags and "A" in raw_flags:
+                flag_str = "SYN-ACK"
+            elif "S" in raw_flags:
+                flag_str = "SYN"
+            elif "F" in raw_flags:
+                flag_str = "FIN"
+            elif "R" in raw_flags:
+                flag_str = "RST"
+            elif "A" in raw_flags:
+                flag_str = "ACK"
+            else:
+                flag_str = "DATA"
+
+            is_ret = bool(parts[10])
+            is_dup = bool(parts[11])
+            src_p = int(parts[4]) if parts[4].isdigit() else 0
+            dst_p = int(parts[5]) if parts[5].isdigit() else 0
+            pkts.append({
+                "num": int(parts[0]) if parts[0].isdigit() else len(pkts) + 1,
+                "time": round(float(parts[1]), 4) if parts[1] else 0.0,
+                "src": parts[2] or "Client",
+                "dst": parts[3] or "Server",
+                "src_port": src_p,
+                "dst_port": dst_p,
+                "direction": "c2s" if dst_p == port else "s2c",
+                "flags": flag_str,
+                "seq": int(parts[7]) if parts[7].isdigit() else 0,
+                "ack": int(parts[8]) if parts[8].isdigit() else 0,
+                "len": int(parts[9]) if parts[9].isdigit() else 0,
+                "is_retrans": is_ret,
+                "is_dup_ack": is_dup,
+                "info": parts[12] or f"TCP {flag_str}"
+            })
+        return pkts
+    except Exception:
+        return []
 
 
 def get_lan_ip() -> str:
@@ -220,8 +371,10 @@ class ImpairRequest(BaseModel):
 
 class TransferRequest(BaseModel):
     mode: str = "send"
-    file: Optional[str] = "tests/data/test_10mb.bin"
+    file: Optional[str] = None
     scenario: Optional[str] = "Manual"
+    pair_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 class JoinRequest(BaseModel):
     role: str = "send"  # send or receive
@@ -286,17 +439,66 @@ def get_session(session_id: str):
     return data
 
 
+@app.get("/api/session/{session_id}/available-role")
+def get_session_available_roles(session_id: str):
+    """Return which roles ('sender', 'receiver') are still available in that session."""
+    sess = session_manager.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    has_sender = any(c.role == ClientRole.SEND for c in sess.clients.values() if c.online)
+    has_receiver = any(c.role == ClientRole.RECEIVE for c in sess.clients.values() if c.online)
+
+    available = []
+    if not has_sender:
+        available.append("sender")
+    if not has_receiver:
+        available.append("receiver")
+
+    return {"available": available}
+
+
 @app.post("/api/session/{session_id}/clients")
 async def register_session_client(session_id: str, req: ClientJoinRequest, request: Request):
     """Register device with the control plane in this session."""
+    sess = session_manager.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     client_ip = request.client.host if request.client else "127.0.0.1"
     # Check X-Forwarded-For if present
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         client_ip = forwarded.split(",")[0].strip()
 
+    req_role = (req.role or "unset").lower()
+    has_sender = any(c.role == ClientRole.SEND for c in sess.clients.values() if c.online)
+    has_receiver = any(c.role == ClientRole.RECEIVE for c in sess.clients.values() if c.online)
+
+    # Enforce that only one sender and one receiver can exist. Reject with 400 if requested role is already taken.
+    if req_role in ("send", "sender"):
+        if has_sender:
+            raise HTTPException(status_code=400, detail="Sender role is already taken in this session")
+        resolved_role = "send"
+    elif req_role in ("receive", "receiver"):
+        if has_receiver:
+            raise HTTPException(status_code=400, detail="Receiver role is already taken in this session")
+        resolved_role = "receive"
+    elif req_role == "auto":
+        if not has_sender:
+            resolved_role = "send"
+        elif not has_receiver:
+            resolved_role = "receive"
+        else:
+            raise HTTPException(status_code=400, detail="Session is full. Both sender and receiver roles are taken.")
+    else:
+        # unset or other role
+        if has_sender and has_receiver:
+            raise HTTPException(status_code=400, detail="Session is full. Both sender and receiver roles are taken.")
+        resolved_role = req_role
+
     try:
-        client = session_manager.register_client(session_id, req.client_name, client_ip, req.role or "unset")
+        client = session_manager.register_client(session_id, req.client_name, client_ip, resolved_role)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -318,6 +520,7 @@ async def register_session_client(session_id: str, req: ClientJoinRequest, reque
         "status": "ok",
         "client": client.model_dump(),
         "client_id": client.client_id,
+        "role": client.role.value if hasattr(client.role, "value") else str(client.role),
         "paired": pair is not None,
         "pair": pair.model_dump() if pair else None
     })
@@ -499,18 +702,28 @@ async def apply_impairment(req: ImpairRequest):
     if req.rate and req.rate != "Unlimited":
         cmd.extend(["--rate", req.rate])
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"Failed to apply impairment: {proc.stderr}")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            err_msg = f"Failed to apply impairment: {proc.stderr.strip() or proc.stdout.strip()}"
+            await broadcaster.broadcast("error", {"message": err_msg})
+            raise HTTPException(status_code=500, detail=err_msg)
 
-    CURRENT_IMPAIRMENT = {
-        "delay": req.delay or "0ms",
-        "loss": req.loss or "0%",
-        "rate": req.rate or "Unlimited"
-    }
+        CURRENT_IMPAIRMENT = {
+            "delay": req.delay or "0ms",
+            "loss": req.loss or "0%",
+            "rate": req.rate or "Unlimited"
+        }
 
-    await broadcaster.broadcast("impairment_update", CURRENT_IMPAIRMENT)
-    return {"status": "ok", "impairment": CURRENT_IMPAIRMENT}
+        await broadcaster.broadcast("impairment_update", CURRENT_IMPAIRMENT)
+        await broadcaster.broadcast("impairments_applied", CURRENT_IMPAIRMENT)
+        return {"status": "ok", "impairment": CURRENT_IMPAIRMENT}
+    except HTTPException:
+        raise
+    except Exception as e:
+        err_msg = f"Impairment execution error: {str(e)}"
+        await broadcaster.broadcast("error", {"message": err_msg})
+        raise HTTPException(status_code=500, detail=err_msg)
 
 
 @app.delete("/api/impair")
@@ -575,12 +788,75 @@ async def upload_file(file: UploadFile = File(...)):
             os.remove(dest_path)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
+    if session_manager.sessions:
+        for s in session_manager.sessions.values():
+            s.uploaded_file = dest_path
+            s.sender_file_path = dest_path
+
     return {
         "status": "ok",
         "filename": filename,
         "path": dest_path,
         "size_bytes": total_bytes,
         "size_mb": round(total_bytes / (1024 * 1024), 2)
+    }
+
+
+@app.post("/api/session/{session_id}/upload")
+async def upload_session_file(session_id: str, file: UploadFile = File(...)):
+    """Upload payload file directly registered to a specific session."""
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    uploads_dir = os.path.join(PROJECT_ROOT, "results", "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    filename = os.path.basename(file.filename or "upload.bin")
+    dest_path = os.path.join(uploads_dir, f"{session_id}_{filename}")
+
+    total_bytes = 0
+    chunk_size = 1024 * 1024
+
+    try:
+        with open(dest_path, "wb") as out_f:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOAD_SIZE:
+                    out_f.close()
+                    if os.path.isfile(dest_path):
+                        os.remove(dest_path)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds maximum allowed size of 200 MB ({total_bytes} bytes uploaded)."
+                    )
+                out_f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if os.path.isfile(dest_path):
+            os.remove(dest_path)
+        raise HTTPException(status_code=500, detail=f"Session upload failed: {str(e)}")
+
+    session.uploaded_file = dest_path
+    session.sender_file_path = dest_path
+
+    await broadcaster.broadcast("file_uploaded", {
+        "session_id": session_id,
+        "filename": filename,
+        "path": dest_path,
+        "size": total_bytes
+    })
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "filename": filename,
+        "path": dest_path,
+        "size_bytes": total_bytes
     }
 
 
@@ -598,19 +874,45 @@ def get_scenarios():
 @app.post("/api/transfer")
 async def trigger_transfer(req: TransferRequest, background_tasks: BackgroundTasks):
     """Execute a file transfer between ns-client and ns-server, streaming telemetry."""
+    global CURRENT_PACKETS, _PACKET_CURSORS
     if CURRENT_TRANSFER["running"]:
         raise HTTPException(status_code=400, detail="A transfer is already in progress.")
 
+    CURRENT_PACKETS = []
+    _PACKET_CURSORS.clear()
+
     ensure_server_running()
 
-    file_path = os.path.abspath(req.file if os.path.isabs(req.file) else os.path.join(PROJECT_ROOT, req.file))
-    if not os.path.isfile(file_path):
-        # Fall back to sample testfile or create one
-        os.makedirs(os.path.join(PROJECT_ROOT, "tests", "data"), exist_ok=True)
-        file_path = os.path.join(PROJECT_ROOT, "tests", "data", "test_10mb.bin")
-        if not os.path.isfile(file_path):
-            with open(file_path, "wb") as f:
-                f.write(os.urandom(10485760))
+    # Strictly resolve target file path from session upload or explicit request parameter
+    target_file = None
+    target_session = None
+
+    if req.session_id:
+        target_session = session_manager.get_session(req.session_id)
+    if not target_session and req.pair_id:
+        for s in session_manager.sessions.values():
+            if s.active_pair and s.active_pair.pair_id == req.pair_id:
+                target_session = s
+                break
+    if not target_session and session_manager.sessions:
+        target_session = list(session_manager.sessions.values())[-1]
+
+    if target_session and target_session.uploaded_file and os.path.isfile(target_session.uploaded_file):
+        target_file = target_session.uploaded_file
+    elif target_session and getattr(target_session, "sender_file_path", None) and os.path.isfile(target_session.sender_file_path):
+        target_file = target_session.sender_file_path
+    elif req.file:
+        cand = os.path.abspath(req.file if os.path.isabs(req.file) else os.path.join(PROJECT_ROOT, req.file))
+        if os.path.isfile(cand):
+            target_file = cand
+
+    if not target_file:
+        raise HTTPException(
+            status_code=400,
+            detail="No source file uploaded or specified for transfer. Please have sender upload a file."
+        )
+
+    file_path = target_file
 
     run_id = uuid.uuid4().hex[:8]
     CURRENT_TRANSFER["running"] = True
@@ -623,6 +925,13 @@ async def trigger_transfer(req: TransferRequest, background_tasks: BackgroundTas
     CURRENT_TRANSFER["total_bytes"] = os.path.getsize(file_path)
     CURRENT_TRANSFER["sha256_ok"] = None
 
+    await broadcaster.broadcast("transfer_started", {
+        "run_id": run_id,
+        "mode": req.mode,
+        "file": os.path.basename(file_path),
+        "total_bytes": os.path.getsize(file_path)
+    })
+
     background_tasks.add_task(
         execute_transfer_worker,
         mode=req.mode,
@@ -630,12 +939,12 @@ async def trigger_transfer(req: TransferRequest, background_tasks: BackgroundTas
         scenario=req.scenario or "Manual",
         run_id=run_id
     )
-    return {"status": "started", "run_id": run_id}
+    return {"status": "started", "run_id": run_id, "file": os.path.basename(file_path)}
 
 
 async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_id: str):
     """Background worker executing the transfer with live sniffer and progress stream."""
-    global CURRENT_TRANSFER
+    global CURRENT_TRANSFER, CURRENT_PACKETS
     use_netns = check_netns_active()
     server_ip = "10.10.0.2" if use_netns else "127.0.0.1"
     iface_name = "veth-c" if use_netns else "eth0"
@@ -650,10 +959,11 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
     sniffer = Sniffer(iface=iface_name, port=5000, out_path=pcap_file, ns=ns_name)
     sniffer.start()
 
-    # Simulate SYN packet event
+    # Initial SYN packet event
     await broadcaster.broadcast("packet_event", {"flag": "SYN", "info": "Connection SYN initiated", "time": time.time()})
 
     client_py = os.path.join(PROJECT_ROOT, "client", "tcp_client.py")
+    results_file = os.path.join(PROJECT_ROOT, "results", "transfers.jsonl")
     base_client_cmd = [
         sys.executable, client_py, mode,
         "--server", server_ip,
@@ -662,7 +972,7 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
         "--scenario", scenario,
         "--run-id", run_id,
         "--progress-json",
-        "--results-file", os.path.join(PROJECT_ROOT, "results", "transfers.jsonl")
+        "--results-file", results_file
     ]
 
     if ns_name:
@@ -670,6 +980,13 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
         cmd = ["sudo", nsrun_script, ns_name] + base_client_cmd
     else:
         cmd = base_client_cmd
+
+    last_bytes = 0
+    last_time = time.perf_counter()
+    last_telemetry_time = time.perf_counter()
+    last_pcap_time = time.perf_counter()
+    latest_record = {}
+    tcp_metrics = {}
 
     try:
         proc = subprocess.Popen(
@@ -696,61 +1013,145 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
 
             try:
                 prog = json.loads(line)
-                CURRENT_TRANSFER["pct"] = prog.get("pct", 0.0)
-                CURRENT_TRANSFER["bytes"] = prog.get("bytes", 0)
-                CURRENT_TRANSFER["mbps"] = prog.get("mbps", 0.0)
+                cur_bytes = prog.get("bytes", 0)
+                now = time.perf_counter()
+                dt = max(now - last_time, 0.05)
+                instant_mbps = round(((cur_bytes - last_bytes) * 8) / (dt * 1_000_000), 2)
+                last_bytes = cur_bytes
+                last_time = now
+
+                pct = prog.get("pct", 0.0)
+                CURRENT_TRANSFER["pct"] = pct
+                CURRENT_TRANSFER["bytes"] = cur_bytes
+                CURRENT_TRANSFER["mbps"] = instant_mbps
 
                 await broadcaster.broadcast("transfer_progress", {
                     "run_id": run_id,
-                    "pct": prog.get("pct", 0.0),
-                    "bytes": prog.get("bytes", 0),
-                    "mbps": prog.get("mbps", 0.0)
+                    "pct": pct,
+                    "bytes": cur_bytes,
+                    "mbps": instant_mbps
                 })
+
+                # Broadcast telemetry_update every second (Requirement 3)
+                if now - last_telemetry_time >= 1.0:
+                    last_telemetry_time = now
+                    kernel_stats = get_kernel_tcp_stats(port=5000, ns=ns_name)
+                    telemetry_data = {
+                        "throughput": instant_mbps,
+                        "rtt": kernel_stats.get("rtt", 0.0),
+                        "cwnd": kernel_stats.get("cwnd", 0),
+                        "retransmissions": kernel_stats.get("retrans", 0),
+                        "pct": pct
+                    }
+                    await broadcaster.broadcast("telemetry_update", telemetry_data)
+
+                # Periodic pcap packet streaming
+                if now - last_pcap_time >= 1.0:
+                    last_pcap_time = now
+                    pkts = extract_pcap_packets(pcap_file, port=5000, limit=200)
+                    if pkts:
+                        CURRENT_PACKETS = pkts
+                        await broadcaster.broadcast("packets_batch", {"packets": pkts[-50:], "count": len(pkts)})
+
             except json.JSONDecodeError:
                 pass
 
         proc.wait()
+        sniffer.stop()
+        await broadcaster.broadcast("packet_event", {"flag": "FIN", "info": "TCP teardown FIN complete", "time": time.time()})
+
+        tcp_metrics = analyze(pcap_file, port=5000)
+        CURRENT_PACKETS = extract_pcap_packets(pcap_file, port=5000, limit=2000)
+
+        # 3. Read latest record from transfers.jsonl and augment with tcp metrics
+        if os.path.isfile(results_file):
+            with open(results_file, "r", encoding="utf-8") as rf:
+                lines = [ln.strip() for ln in rf if ln.strip()]
+                if lines:
+                    try:
+                        latest_record = json.loads(lines[-1])
+                    except Exception:
+                        pass
+
+        latest_record["pcap"] = rel_pcap
+        latest_record["tcp"] = tcp_metrics
+        latest_record["packets"] = CURRENT_PACKETS
+
+        # Re-write the augmented record
+        if os.path.isfile(results_file):
+            with open(results_file, "r", encoding="utf-8") as rf:
+                all_lines = [ln.strip() for ln in rf if ln.strip()]
+            if all_lines:
+                all_lines[-1] = json.dumps(latest_record)
+                with open(results_file, "w", encoding="utf-8") as wf:
+                    wf.write("\n".join(all_lines) + "\n")
+
+        CURRENT_TRANSFER["pct"] = 100.0
+        CURRENT_TRANSFER["sha256_ok"] = latest_record.get("sha256_ok", True)
+        if latest_record.get("throughput_mbps"):
+            CURRENT_TRANSFER["mbps"] = float(latest_record["throughput_mbps"])
+
+        # Final packets and completion broadcast
+        await broadcaster.broadcast("packets_batch", {"packets": CURRENT_PACKETS, "count": len(CURRENT_PACKETS)})
+        await broadcaster.broadcast("transfer_complete", {
+            "run_id": run_id,
+            "record": latest_record,
+            "tcp": tcp_metrics,
+            "packets": CURRENT_PACKETS
+        })
+
     except Exception as e:
         print(f"[ERROR] Transfer execution error: {e}")
+        try:
+            sniffer.stop()
+        except Exception:
+            pass
+    finally:
+        CURRENT_TRANSFER["running"] = False
 
-    # 2. Stop Sniffer and dissect PCAP
-    sniffer.stop()
-    await broadcaster.broadcast("packet_event", {"flag": "FIN", "info": "TCP teardown FIN complete", "time": time.time()})
 
-    tcp_metrics = analyze(pcap_file, port=5000)
+@app.get("/api/packets")
+def get_packets():
+    return {"packets": CURRENT_PACKETS, "count": len(CURRENT_PACKETS)}
 
-    # 3. Read latest record from transfers.jsonl and augment with tcp metrics
-    results_file = os.path.join(PROJECT_ROOT, "results", "transfers.jsonl")
-    latest_record = {}
-    if os.path.isfile(results_file):
-        with open(results_file, "r", encoding="utf-8") as rf:
-            lines = [ln.strip() for ln in rf if ln.strip()]
-            if lines:
-                try:
-                    latest_record = json.loads(lines[-1])
-                except Exception:
-                    pass
 
-    latest_record["pcap"] = rel_pcap
-    latest_record["tcp"] = tcp_metrics
+@app.get("/api/telemetry")
+def get_telemetry():
+    return CURRENT_TRANSFER
 
-    # Re-write the augmented record
-    if os.path.isfile(results_file):
-        with open(results_file, "r", encoding="utf-8") as rf:
-            all_lines = [ln.strip() for ln in rf if ln.strip()]
-        if all_lines:
-            all_lines[-1] = json.dumps(latest_record)
-            with open(results_file, "w", encoding="utf-8") as wf:
-                wf.write("\n".join(all_lines) + "\n")
 
-    CURRENT_TRANSFER["running"] = False
-    CURRENT_TRANSFER["sha256_ok"] = latest_record.get("sha256_ok", True)
-
-    await broadcaster.broadcast("transfer_complete", {
-        "run_id": run_id,
-        "record": latest_record,
-        "tcp": tcp_metrics
+@app.post("/api/session/{session_id}/signal/ready")
+async def signal_sender_ready(session_id: str, payload: Optional[Dict[str, Any]] = None):
+    """Signal that sender is ready to transfer."""
+    filename = (payload or {}).get("filename", "")
+    await broadcaster.broadcast("sender_ready", {
+        "session_id": session_id,
+        "ready": True,
+        "filename": filename
     })
+    return {"status": "ok", "ready": True, "filename": filename}
+
+
+@app.websocket("/api/ws")
+@app.websocket("/api/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None):
+    await websocket.accept()
+    await broadcaster.register_ws(websocket)
+    try:
+        while True:
+            text = await websocket.receive_text()
+            if not text:
+                continue
+            try:
+                msg = json.loads(text)
+                if msg.get("type") == "PING":
+                    await websocket.send_text(json.dumps({"type": "PONG", "time": time.time()}))
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        broadcaster.unregister_ws(websocket)
+    except Exception:
+        broadcaster.unregister_ws(websocket)
 
 
 @app.get("/api/events")
@@ -832,47 +1233,111 @@ def stop_experiments():
 # Frontend Views & Static Delivery
 # ---------------------------------------------------------------------------
 
-@app.get("/", response_class=HTMLResponse)
-def index_view():
-    gui_index = os.path.join(PROJECT_ROOT, "gui", "index.html")
-    if os.path.isfile(gui_index):
-        with open(gui_index, "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h1>NetScope GUI Loading...</h1>"
+# ---------------------------------------------------------------------------
+# Fernet Key Derivation & Server Storage Cleanup (Task 10)
+# ---------------------------------------------------------------------------
+
+def get_fernet_key(run_id: str) -> bytes:
+    """Derive a deterministic Fernet key (32 URL-safe base64 bytes) from run_id."""
+    digest = hashlib.sha256(run_id.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
+
+
+@app.get("/api/download/{run_id}")
+async def download_file_by_run_id(run_id: str, background_tasks: BackgroundTasks):
+    """
+    Find file in results/server_storage by run_id from transfers.jsonl,
+    decrypt using Fernet key derived from run_id, stream as download, and delete after.
+    """
+    cleanup_old_server_storage()
+    results_file = os.path.join(PROJECT_ROOT, "results", "transfers.jsonl")
+    matched_file = None
+    if os.path.isfile(results_file):
+        with open(results_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("run_id") == run_id:
+                        matched_file = rec.get("file")
+                        break
+                except Exception:
+                    pass
+
+    storage_dir = os.path.join(PROJECT_ROOT, "results", "server_storage")
+    file_path = None
+    if matched_file:
+        candidate = os.path.join(storage_dir, matched_file)
+        if os.path.isfile(candidate):
+            file_path = candidate
+
+    # Fallback: check if run_id directly names or matches a file in server_storage
+    if not file_path and os.path.isdir(storage_dir):
+        for fn in os.listdir(storage_dir):
+            if fn == run_id or run_id in fn:
+                file_path = os.path.join(storage_dir, fn)
+                matched_file = fn
+                break
+
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail=f"File for run_id '{run_id}' not found in storage.")
+
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+
+    # Attempt Fernet decryption using key derived from run_id
+    try:
+        cipher = Fernet(get_fernet_key(run_id))
+        decrypted_bytes = cipher.decrypt(file_bytes)
+    except Exception:
+        # Fallback to raw bytes if not encrypted
+        decrypted_bytes = file_bytes
+
+    # Schedule deletion after response finishes
+    background_tasks.add_task(os.remove, file_path)
+
+    out_name = matched_file or f"download_{run_id}.bin"
+    return Response(
+        content=decrypted_bytes,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'}
+    )
+
+
+# ---------------------------------------------------------------------------
+# API Root & Redirects (Old GUI routes removed per Task 1)
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+def api_root():
+    """FastAPI only serves API endpoints and WebSocket (Task 1)."""
+    return {
+        "service": "NetScope API",
+        "status": "running",
+        "version": "2.0.0",
+        "docs": "/docs",
+        "desktop_frontend": "http://localhost:5173",
+        "mobile_frontend": "http://localhost:5174",
+    }
 
 
 @app.get("/join/{session_id}", response_class=HTMLResponse)
-def join_view(session_id: str):
-    join_html = os.path.join(PROJECT_ROOT, "gui", "join.html")
-    if os.path.isfile(join_html):
-        with open(join_html, "r", encoding="utf-8") as f:
-            content = f.read()
-            return content.replace("{{SESSION_ID}}", session_id.upper())
-    return f"<h1>NetScope Join Session {session_id}</h1>"
-
-
-@app.get("/manifest.json")
-def get_manifest():
-    manifest_path = os.path.join(PROJECT_ROOT, "gui", "manifest.json")
-    if os.path.isfile(manifest_path):
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            return JSONResponse(content=json.load(f))
-    return JSONResponse(content={"name": "NetScope", "short_name": "NetScope"})
-
-
-@app.get("/sw.js")
-def get_service_worker():
-    sw_path = os.path.join(PROJECT_ROOT, "gui", "sw.js")
-    if os.path.isfile(sw_path):
-        with open(sw_path, "r", encoding="utf-8") as f:
-            return Response(content=f.read(), media_type="application/javascript")
-    return Response(content="// sw", media_type="application/javascript")
-
-
-@app.get("/icon.svg")
-def get_app_icon():
-    icon_path = os.path.join(PROJECT_ROOT, "gui", "icon.svg")
-    if os.path.isfile(icon_path):
-        with open(icon_path, "r", encoding="utf-8") as f:
-            return Response(content=f.read(), media_type="image/svg+xml")
-    return Response(content="<svg></svg>", media_type="image/svg+xml")
+def api_join_redirect(session_id: str, request: Request):
+    """Redirect mobile join requests to the mobile React Vite app on port 5174."""
+    host = request.url.hostname or "localhost"
+    redirect_target = f"http://{host}:5174/join/{session_id}"
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>NetScope Join {session_id}</title>
+    <meta http-equiv="refresh" content="0; url={redirect_target}">
+</head>
+<body>
+    <p>Joining NetScope session {session_id}... <a href="{redirect_target}">Click here to continue</a></p>
+    <script>window.location.href = "{redirect_target}";</script>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=200)

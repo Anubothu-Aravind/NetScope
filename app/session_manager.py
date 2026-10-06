@@ -47,7 +47,18 @@ class SessionManager:
             raise KeyError(f"Session {session_id} not found")
 
         client_id = f"C-{uuid.uuid4().hex[:6].upper()}"
-        role = ClientRole(role_str.lower()) if role_str.lower() in [r.value for r in ClientRole] else ClientRole.UNSET
+        r_str = role_str.lower()
+        if r_str == "auto":
+            has_sender = any(c.role == ClientRole.SEND for c in session.clients.values() if c.online)
+            role = ClientRole.RECEIVE if has_sender else ClientRole.SEND
+        elif r_str in ("send", "sender"):
+            role = ClientRole.SEND
+        elif r_str in ("receive", "receiver"):
+            role = ClientRole.RECEIVE
+        elif r_str in [r.value for r in ClientRole]:
+            role = ClientRole(r_str)
+        else:
+            role = ClientRole.UNSET
         status = ClientStatus.WAITING if role != ClientRole.UNSET else ClientStatus.CONNECTED
 
         client = ClientInfo(

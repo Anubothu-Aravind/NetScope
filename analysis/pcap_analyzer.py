@@ -74,7 +74,7 @@ def analyze(pcap_path: str, port: int = 5000) -> Dict[str, Any]:
 
     cmd = [
         "tshark",
-        "-r", pcap_path,
+        "-r", "-",
         "-Y", f"tcp.port == {port}",
         "-T", "fields",
         "-E", "separator=\t",
@@ -82,7 +82,8 @@ def analyze(pcap_path: str, port: int = 5000) -> Dict[str, Any]:
     ] + fields
 
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        with open(pcap_path, "rb") as pf:
+            proc = subprocess.run(cmd, stdin=pf, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
     except FileNotFoundError:
         metrics["error"] = "tshark executable not found. Install via: sudo apt install -y tshark"
         return metrics

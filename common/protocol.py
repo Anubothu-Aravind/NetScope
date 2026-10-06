@@ -65,19 +65,33 @@ def send_file_stream(sock, file_path: str, file_size: int,
     Computes and returns the SHA-256 checksum of the transmitted data.
     """
     hasher = hashlib.sha256()
-    sent_total = 0
-
     with open(file_path, "rb") as f:
-        while sent_total < file_size:
-            chunk_to_read = min(CHUNK_SIZE, file_size - sent_total)
-            chunk = f.read(chunk_to_read)
-            if not chunk:
-                break
-            hasher.update(chunk)
-            sock.sendall(chunk)
-            sent_total += len(chunk)
-            if progress_cb:
-                progress_cb(sent_total, file_size)
+        data = f.read()
+
+    try:
+        if data.startswith(b"gAAAAA"):
+            from server.tcp_server import ENCRYPTION_KEYS
+            from cryptography.fernet import Fernet
+            for k in list(ENCRYPTION_KEYS.values()):
+                try:
+                    data = Fernet(k).decrypt(data)
+                    break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    sent_total = 0
+    actual_size = len(data)
+    while sent_total < actual_size:
+        chunk = data[sent_total:sent_total + CHUNK_SIZE]
+        if not chunk:
+            break
+        hasher.update(chunk)
+        sock.sendall(chunk)
+        sent_total += len(chunk)
+        if progress_cb:
+            progress_cb(sent_total, actual_size)
 
     return hasher.hexdigest()
 
@@ -110,9 +124,20 @@ def compute_sha256(file_path: str) -> str:
     """Compute the SHA-256 hash of a file on disk."""
     hasher = hashlib.sha256()
     with open(file_path, "rb") as f:
-        while True:
-            chunk = f.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            hasher.update(chunk)
+        data = f.read()
+
+    try:
+        if data.startswith(b"gAAAAA"):
+            from server.tcp_server import ENCRYPTION_KEYS
+            from cryptography.fernet import Fernet
+            for k in list(ENCRYPTION_KEYS.values()):
+                try:
+                    decrypted = Fernet(k).decrypt(data)
+                    return hashlib.sha256(decrypted).hexdigest()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    hasher.update(data)
     return hasher.hexdigest()

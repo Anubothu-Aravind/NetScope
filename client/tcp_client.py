@@ -134,7 +134,8 @@ def run_transfer(mode: str, server_ip: str, port: int, file_arg: str,
                 "type": "SEND_REQUEST",
                 "name": filename,
                 "size": file_size,
-                "sha256": local_sha256
+                "sha256": local_sha256,
+                "run_id": run_id
             })
 
             ready_reply = recv_msg(sock)
