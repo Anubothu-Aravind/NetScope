@@ -37,6 +37,10 @@ from common.protocol import (
     send_file_stream,
     recv_file_stream,
     compute_sha256,
+    get_default_port,
+    parse_delay_ms,
+    parse_loss_pct,
+    parse_rate_bps,
 )
 
 
@@ -55,12 +59,23 @@ def print_progress(current: int, total: int, prefix: str = "Transferring"):
 
 
 class JsonProgressTracker:
-    """Emits throttled JSON telemetry lines (~250 ms) for frontend/backend streaming."""
+    """Emits throttled JSON telemetry lines (~200 ms) for frontend/backend streaming."""
     def __init__(self, total_bytes: int):
         self.total_bytes = total_bytes
         self.start_time = time.perf_counter()
         self.last_emit_time = 0.0
-        self.interval = 0.25  # 250 ms
+        self.interval = 0.20  # 200 ms
+        self.last_stats = {}
+
+    def emit_stats(self, stats: dict):
+        now = time.perf_counter()
+        self.last_stats.update(stats)
+        is_complete = (stats.get("bytes", 0) >= self.total_bytes)
+        is_event = (stats.get("event") is not None)
+        if is_complete or is_event or (now - self.last_emit_time >= self.interval):
+            sys.stdout.write(json.dumps(self.last_stats) + "\n")
+            sys.stdout.flush()
+            self.last_emit_time = now
 
     def update(self, current_bytes: int, total_bytes: int):
         now = time.perf_counter()
@@ -72,7 +87,8 @@ class JsonProgressTracker:
             data = {
                 "pct": round(pct, 1),
                 "bytes": current_bytes,
-                "mbps": round(mbps, 2)
+                "mbps": round(mbps, 2),
+                **self.last_stats
             }
             sys.stdout.write(json.dumps(data) + "\n")
             sys.stdout.flush()
@@ -91,7 +107,10 @@ def run_transfer(mode: str, server_ip: str, port: int, file_arg: str,
                  scenario: str = "standalone", dest_dir: str = "downloads",
                  results_file: str = "results/transfers.jsonl",
                  run_id: Optional[str] = None,
-                 progress_json: bool = False) -> dict:
+                 progress_json: bool = False,
+                 delay: Optional[str] = "0ms",
+                 loss: Optional[str] = "0%",
+                 rate: Optional[str] = "Unlimited") -> dict:
     """
     Connect to server, execute Send or Receive, measure performance, and log results.
     """
@@ -142,12 +161,23 @@ def run_transfer(mode: str, server_ip: str, port: int, file_arg: str,
             if ready_reply.get("type") != "READY":
                 raise RuntimeError(f"Server rejected send request: {ready_reply.get('message')}")
 
+            d_ms = parse_delay_ms(delay)
+            l_pct = parse_loss_pct(loss)
+            r_bps = parse_rate_bps(rate)
+
             print(f"[*] Streaming {file_size / (1024*1024):.2f} MB to server in 64 KB chunks...")
+            if d_ms > 0 or l_pct > 0 or r_bps > 0:
+                print(f"    Active Impairments: Delay={d_ms:.1f}ms, Loss={l_pct:.1f}%, Rate={r_bps/1_000_000:.2f} Mbps")
+
             tracker = JsonProgressTracker(file_size) if progress_json else None
             t_tx_start = time.perf_counter()
             actual_sha = send_file_stream(
                 sock, file_arg, file_size,
-                progress_cb=tracker.update if progress_json else (lambda cur, tot: print_progress(cur, tot, "Uploading"))
+                progress_cb=tracker.update if progress_json else (lambda cur, tot: print_progress(cur, tot, "Uploading")),
+                delay_ms=d_ms,
+                loss_pct=l_pct,
+                rate_bps=r_bps,
+                stats_cb=tracker.emit_stats if tracker else None
             )
             t_tx_end = time.perf_counter()
             completion_s = max(t_tx_end - t_tx_start, 1e-6)
@@ -235,13 +265,16 @@ def main():
     parser = argparse.ArgumentParser(description="NetScope TCP Transfer Client")
     parser.add_argument("mode", choices=["send", "receive"], help="Transfer mode: send or receive")
     parser.add_argument("--server", default="127.0.0.1", help="Server IP address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=5000, help="TCP Server port (default: 5000)")
+    parser.add_argument("--port", type=int, default=get_default_port(), help="TCP Server port (default: auto)")
     parser.add_argument("--file", required=True, help="Path to file to send, or filename to receive")
     parser.add_argument("--scenario", default="standalone", help="Scenario label (e.g., Baseline, Delay-1)")
     parser.add_argument("--dest-dir", default="downloads", help="Directory for received files (default: downloads)")
     parser.add_argument("--results-file", default="results/transfers.jsonl", help="Results file path (default: results/transfers.jsonl)")
     parser.add_argument("--run-id", default=None, help="Optional 8-char Run ID (generated if not provided)")
-    parser.add_argument("--progress-json", action="store_true", help="Output progress as JSON stream lines (~250ms)")
+    parser.add_argument("--progress-json", action="store_true", help="Output progress as JSON stream lines (~200ms)")
+    parser.add_argument("--delay", default="0ms", help="Simulated latency (e.g. 100ms)")
+    parser.add_argument("--loss", default="0%", help="Simulated packet loss percentage (e.g. 2 percent)")
+    parser.add_argument("--rate", default="Unlimited", help="Bandwidth rate limit (e.g. 5mbit)")
     args = parser.parse_args()
 
     try:
@@ -254,7 +287,10 @@ def main():
             dest_dir=args.dest_dir,
             results_file=args.results_file,
             run_id=args.run_id,
-            progress_json=args.progress_json
+            progress_json=args.progress_json,
+            delay=args.delay,
+            loss=args.loss,
+            rate=args.rate
         )
     except Exception as e:
         print(f"\n[ERROR] Transfer failed: {e}")

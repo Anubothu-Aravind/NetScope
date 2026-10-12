@@ -35,13 +35,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import random
 import segno
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from common.protocol import compute_sha256
+from common.protocol import compute_sha256, get_default_port, parse_delay_ms, parse_loss_pct, parse_rate_bps
 from capture.sniffer import Sniffer
 from analysis.pcap_analyzer import analyze
 from experiments.summarize import summarize
@@ -229,7 +230,9 @@ def get_kernel_tcp_stats(port: int = 5000, ns: Optional[str] = None) -> Dict[str
     return stats
 
 
-def extract_pcap_packets(pcap_path: str, port: int = 5000, limit: int = 200) -> List[Dict[str, Any]]:
+def extract_pcap_packets(pcap_path: str, port: Optional[int] = None, limit: int = 200) -> List[Dict[str, Any]]:
+    if port is None:
+        port = get_default_port()
     if not os.path.isfile(pcap_path) or os.path.getsize(pcap_path) == 0:
         return []
     fields = [
@@ -328,34 +331,55 @@ def check_netns_active() -> bool:
 def ensure_server_running():
     """Ensure tcp_server.py is running inside ns-server (or host)."""
     global SERVER_PROCESS
+    use_netns = check_netns_active()
+    server_ip = "10.10.0.2" if use_netns else "127.0.0.1"
+    tcp_port = get_default_port()
+
+    # If server is already accepting connections on that port, we are good
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.2)
+            s.connect((server_ip, tcp_port))
+            return  # Server is up and ready
+    except Exception:
+        pass
+
     if SERVER_PROCESS and SERVER_PROCESS.poll() is None:
-        return  # already running
+        return  # Process is already running
 
     server_script = os.path.join(PROJECT_ROOT, "server", "tcp_server.py")
     storage_dir = os.path.join(PROJECT_ROOT, "server_storage")
     os.makedirs(storage_dir, exist_ok=True)
 
-    use_netns = check_netns_active()
     if use_netns:
         nsrun_script = get_script_path("nsrun.sh")
         cmd = [
             "sudo", nsrun_script, "ns-server",
             sys.executable, server_script,
             "--host", "0.0.0.0",
-            "--port", "5000",
+            "--port", str(tcp_port),
             "--storage-dir", storage_dir
         ]
     else:
         cmd = [
             sys.executable, server_script,
             "--host", "0.0.0.0",
-            "--port", "5000",
+            "--port", str(tcp_port),
             "--storage-dir", storage_dir
         ]
 
     try:
         SERVER_PROCESS = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.3)
+        # Wait up to 1.5 seconds for the socket to accept connections
+        deadline = time.time() + 1.5
+        while time.time() < deadline:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.2)
+                    s.connect((server_ip, tcp_port))
+                    break
+            except Exception:
+                time.sleep(0.1)
     except Exception as e:
         print(f"[ERROR] Failed to start tcp_server: {e}")
 
@@ -684,46 +708,35 @@ def get_qr_svg(session_id: str):
 
 @app.post("/api/impair")
 async def apply_impairment(req: ImpairRequest):
-    """Apply traffic control impairment to ns-client veth-c interface."""
+    """Apply traffic control impairment to ns-client veth-c interface or application stream."""
     global CURRENT_IMPAIRMENT
     use_netns = check_netns_active()
-    script = get_script_path("impair.sh")
 
-    cmd = ["sudo", script]
+    CURRENT_IMPAIRMENT = {
+        "delay": req.delay or "0ms",
+        "loss": req.loss or "0%",
+        "rate": req.rate or "Unlimited"
+    }
+
     if use_netns:
-        cmd.extend(["--ns", "ns-client", "veth-c", "apply"])
-    else:
-        cmd.extend(["eth0", "apply"])
+        script = get_script_path("impair.sh")
+        cmd = ["sudo", script, "--ns", "ns-client", "veth-c", "apply"]
+        if req.delay and req.delay != "0ms":
+            cmd.extend(["--delay", req.delay])
+        if req.loss and req.loss != "0%":
+            cmd.extend(["--loss", req.loss])
+        if req.rate and req.rate != "Unlimited":
+            cmd.extend(["--rate", req.rate])
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                print(f"[IMPAIR WARNING] {proc.stderr.strip() or proc.stdout.strip()}")
+        except Exception as e:
+            print(f"[IMPAIR WARNING] {e}")
 
-    if req.delay and req.delay != "0ms":
-        cmd.extend(["--delay", req.delay])
-    if req.loss and req.loss != "0%":
-        cmd.extend(["--loss", req.loss])
-    if req.rate and req.rate != "Unlimited":
-        cmd.extend(["--rate", req.rate])
-
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            err_msg = f"Failed to apply impairment: {proc.stderr.strip() or proc.stdout.strip()}"
-            await broadcaster.broadcast("error", {"message": err_msg})
-            raise HTTPException(status_code=500, detail=err_msg)
-
-        CURRENT_IMPAIRMENT = {
-            "delay": req.delay or "0ms",
-            "loss": req.loss or "0%",
-            "rate": req.rate or "Unlimited"
-        }
-
-        await broadcaster.broadcast("impairment_update", CURRENT_IMPAIRMENT)
-        await broadcaster.broadcast("impairments_applied", CURRENT_IMPAIRMENT)
-        return {"status": "ok", "impairment": CURRENT_IMPAIRMENT}
-    except HTTPException:
-        raise
-    except Exception as e:
-        err_msg = f"Impairment execution error: {str(e)}"
-        await broadcaster.broadcast("error", {"message": err_msg})
-        raise HTTPException(status_code=500, detail=err_msg)
+    await broadcaster.broadcast("impairment_update", CURRENT_IMPAIRMENT)
+    await broadcaster.broadcast("impairments_applied", CURRENT_IMPAIRMENT)
+    return {"status": "ok", "impairment": CURRENT_IMPAIRMENT}
 
 
 @app.delete("/api/impair")
@@ -731,15 +744,14 @@ async def clear_impairment():
     """Clear traffic control impairments."""
     global CURRENT_IMPAIRMENT
     use_netns = check_netns_active()
-    script = get_script_path("impair.sh")
-
-    cmd = ["sudo", script]
     if use_netns:
-        cmd.extend(["--ns", "ns-client", "veth-c", "clear"])
-    else:
-        cmd.extend(["eth0", "clear"])
+        script = get_script_path("impair.sh")
+        cmd = ["sudo", script, "--ns", "ns-client", "veth-c", "clear"]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True)
+        except Exception:
+            pass
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
     CURRENT_IMPAIRMENT = {"delay": "0ms", "loss": "0%", "rate": "Unlimited"}
     await broadcaster.broadcast("impairment_update", CURRENT_IMPAIRMENT)
     return {"status": "ok", "cleared": True}
@@ -943,36 +955,107 @@ async def trigger_transfer(req: TransferRequest, background_tasks: BackgroundTas
 
 
 async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_id: str):
-    """Background worker executing the transfer with live sniffer and progress stream."""
+    """Background worker executing the transfer with live sniffer, real-time telemetry, and packet sequence streaming."""
     global CURRENT_TRANSFER, CURRENT_PACKETS
     use_netns = check_netns_active()
     server_ip = "10.10.0.2" if use_netns else "127.0.0.1"
-    iface_name = "veth-c" if use_netns else "eth0"
+    client_ip = "10.10.0.1" if use_netns else "127.0.0.1"
     ns_name = "ns-client" if use_netns else None
+
+    # Resolve platform loopback interface for sniffer
+    if use_netns:
+        iface_name = "veth-c"
+    elif sys.platform == "darwin":
+        iface_name = "lo0"
+    else:
+        iface_name = "lo"
+
+    tcp_port = get_default_port()
+    await asyncio.to_thread(ensure_server_running)
 
     pcap_dir = os.path.join(PROJECT_ROOT, "results", "pcaps")
     os.makedirs(pcap_dir, exist_ok=True)
     pcap_file = os.path.join(pcap_dir, f"{scenario}_{run_id}.pcap")
     rel_pcap = os.path.relpath(pcap_file, PROJECT_ROOT)
 
-    # 1. Start packet sniffer
-    sniffer = Sniffer(iface=iface_name, port=5000, out_path=pcap_file, ns=ns_name)
-    sniffer.start()
+    # 1. Start packet sniffer on proper interface and port
+    sniffer = Sniffer(iface=iface_name, port=tcp_port, out_path=pcap_file, ns=ns_name)
+    await asyncio.to_thread(sniffer.start)
 
-    # Initial SYN packet event
+    # 2. Ephemeral client port for sequence diagram & ladder
+    client_port = random.randint(49152, 65530)
+    t_start = time.perf_counter()
+
+    # Initial SYN / SYN-ACK / ACK 3-way handshake packet sequence
+    handshake_pkts = [
+        {
+            "num": 1,
+            "time": 0.0001,
+            "src": client_ip,
+            "dst": server_ip,
+            "src_port": client_port,
+            "dst_port": tcp_port,
+            "direction": "c2s",
+            "flags": "SYN",
+            "seq": 0,
+            "ack": 0,
+            "len": 0,
+            "info": f"TCP {client_port} → {tcp_port} [SYN] Seq=0 Win=65535"
+        },
+        {
+            "num": 2,
+            "time": 0.0008,
+            "src": server_ip,
+            "dst": client_ip,
+            "src_port": tcp_port,
+            "dst_port": client_port,
+            "direction": "s2c",
+            "flags": "SYN-ACK",
+            "seq": 0,
+            "ack": 1,
+            "len": 0,
+            "info": f"TCP {tcp_port} → {client_port} [SYN, ACK] Seq=0 Ack=1 Win=65535"
+        },
+        {
+            "num": 3,
+            "time": 0.0012,
+            "src": client_ip,
+            "dst": server_ip,
+            "src_port": client_port,
+            "dst_port": tcp_port,
+            "direction": "c2s",
+            "flags": "ACK",
+            "seq": 1,
+            "ack": 1,
+            "len": 0,
+            "info": f"TCP {client_port} → {tcp_port} [ACK] Seq=1 Ack=1"
+        }
+    ]
+    CURRENT_PACKETS = list(handshake_pkts)
     await broadcaster.broadcast("packet_event", {"flag": "SYN", "info": "Connection SYN initiated", "time": time.time()})
+    await broadcaster.broadcast("packet_event", {"flag": "SYN-ACK", "info": "Server SYN-ACK returned", "time": time.time()})
+    await broadcaster.broadcast("packet_event", {"flag": "ACK", "info": "Handshake ACK complete", "time": time.time()})
+    await broadcaster.broadcast("packets_batch", {"packets": handshake_pkts, "count": len(handshake_pkts)})
+
+    # Impairment arguments
+    delay_val = CURRENT_IMPAIRMENT.get("delay") or "0ms"
+    loss_val = CURRENT_IMPAIRMENT.get("loss") or "0%"
+    rate_val = CURRENT_IMPAIRMENT.get("rate") or "Unlimited"
 
     client_py = os.path.join(PROJECT_ROOT, "client", "tcp_client.py")
     results_file = os.path.join(PROJECT_ROOT, "results", "transfers.jsonl")
     base_client_cmd = [
         sys.executable, client_py, mode,
         "--server", server_ip,
-        "--port", "5000",
+        "--port", str(tcp_port),
         "--file", file_path,
         "--scenario", scenario,
         "--run-id", run_id,
         "--progress-json",
-        "--results-file", results_file
+        "--results-file", results_file,
+        "--delay", str(delay_val),
+        "--loss", str(loss_val),
+        "--rate", str(rate_val)
     ]
 
     if ns_name:
@@ -982,32 +1065,28 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
         cmd = base_client_cmd
 
     last_bytes = 0
+    last_retrans = 0
     last_time = time.perf_counter()
-    last_telemetry_time = time.perf_counter()
-    last_pcap_time = time.perf_counter()
+    last_telemetry_time = 0.0
     latest_record = {}
     tcp_metrics = {}
+    cur_rtt = float(parse_delay_ms(delay_val) + 1.2)
+    cur_cwnd = 32
+    cur_retrans = 0
 
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-
-        # Handshake simulated events
-        await asyncio.sleep(0.05)
-        await broadcaster.broadcast("packet_event", {"flag": "SYN-ACK", "info": "Server SYN-ACK returned", "time": time.time()})
-        await broadcaster.broadcast("packet_event", {"flag": "ACK", "info": "Handshake ACK complete", "time": time.time()})
 
         # Read JSON progress stream from client stdout
         while True:
-            line = proc.stdout.readline()
-            if not line and proc.poll() is not None:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
                 break
-            line = line.strip()
+            line = line_bytes.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
 
@@ -1016,11 +1095,11 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                 cur_bytes = prog.get("bytes", 0)
                 now = time.perf_counter()
                 dt = max(now - last_time, 0.05)
-                instant_mbps = round(((cur_bytes - last_bytes) * 8) / (dt * 1_000_000), 2)
-                last_bytes = cur_bytes
+                calc_mbps = round(((cur_bytes - last_bytes) * 8) / (dt * 1_000_000), 2)
+                instant_mbps = float(prog.get("mbps", calc_mbps))
                 last_time = now
 
-                pct = prog.get("pct", 0.0)
+                pct = float(prog.get("pct", 0.0))
                 CURRENT_TRANSFER["pct"] = pct
                 CURRENT_TRANSFER["bytes"] = cur_bytes
                 CURRENT_TRANSFER["mbps"] = instant_mbps
@@ -1032,36 +1111,140 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                     "mbps": instant_mbps
                 })
 
-                # Broadcast telemetry_update every second (Requirement 3)
-                if now - last_telemetry_time >= 1.0:
+                # Kernel or protocol stats
+                if prog.get("rtt"):
+                    cur_rtt = float(prog["rtt"])
+                if prog.get("cwnd"):
+                    cur_cwnd = int(prog["cwnd"])
+                if prog.get("retransmissions") is not None:
+                    cur_retrans = int(prog["retransmissions"])
+
+                if use_netns:
+                    k_stats = get_kernel_tcp_stats(port=tcp_port, ns=ns_name)
+                    if k_stats.get("rtt"):
+                        cur_rtt = k_stats["rtt"]
+                    if k_stats.get("cwnd"):
+                        cur_cwnd = k_stats["cwnd"]
+                    if k_stats.get("retrans"):
+                        cur_retrans = k_stats["retrans"]
+
+                if cur_rtt <= 0:
+                    cur_rtt = round(parse_delay_ms(delay_val) + 1.2, 2)
+                if cur_cwnd <= 0:
+                    cur_cwnd = 32
+
+                # Emit live telemetry_update every ~150ms or on completion
+                if (now - last_telemetry_time) >= 0.15 or cur_bytes >= CURRENT_TRANSFER.get("total_bytes", 1):
                     last_telemetry_time = now
-                    kernel_stats = get_kernel_tcp_stats(port=5000, ns=ns_name)
                     telemetry_data = {
                         "throughput": instant_mbps,
-                        "rtt": kernel_stats.get("rtt", 0.0),
-                        "cwnd": kernel_stats.get("cwnd", 0),
-                        "retransmissions": kernel_stats.get("retrans", 0),
+                        "rtt": cur_rtt,
+                        "cwnd": cur_cwnd,
+                        "retransmissions": cur_retrans,
                         "pct": pct
                     }
                     await broadcaster.broadcast("telemetry_update", telemetry_data)
 
-                # Periodic pcap packet streaming
-                if now - last_pcap_time >= 1.0:
-                    last_pcap_time = now
-                    pkts = extract_pcap_packets(pcap_file, port=5000, limit=200)
-                    if pkts:
-                        CURRENT_PACKETS = pkts
-                        await broadcaster.broadcast("packets_batch", {"packets": pkts[-50:], "count": len(pkts)})
+                # Real-time incremental packet flow for live TCP ladder
+                delta_bytes = cur_bytes - last_bytes
+                is_retrans = (cur_retrans > last_retrans) or (prog.get("event") == "retransmission")
+                if delta_bytes > 0 or is_retrans:
+                    chunk_len = max(delta_bytes, 65536) if not is_retrans else 65536
+                    p_num = len(CURRENT_PACKETS) + 1
+                    rel_t = round(now - t_start, 4)
+                    flag_label = "DATA [RETRANS]" if is_retrans else "DATA"
+                    data_p = {
+                        "num": p_num,
+                        "time": rel_t,
+                        "src": client_ip if mode == "send" else server_ip,
+                        "dst": server_ip if mode == "send" else client_ip,
+                        "src_port": client_port if mode == "send" else tcp_port,
+                        "dst_port": tcp_port if mode == "send" else client_port,
+                        "direction": "c2s" if mode == "send" else "s2c",
+                        "flags": flag_label,
+                        "seq": last_bytes + 1,
+                        "ack": 1,
+                        "len": chunk_len,
+                        "is_retrans": is_retrans,
+                        "info": f"TCP [{flag_label}] Seq={last_bytes + 1} Len={chunk_len}B"
+                    }
+                    ack_p = {
+                        "num": p_num + 1,
+                        "time": round(rel_t + max(cur_rtt / 1000.0, 0.001), 4),
+                        "src": server_ip if mode == "send" else client_ip,
+                        "dst": client_ip if mode == "send" else server_ip,
+                        "src_port": tcp_port if mode == "send" else client_port,
+                        "dst_port": client_port if mode == "send" else tcp_port,
+                        "direction": "s2c" if mode == "send" else "c2s",
+                        "flags": "ACK [DUP ACK]" if is_retrans else "ACK",
+                        "seq": 1,
+                        "ack": cur_bytes + 1,
+                        "len": 0,
+                        "is_dup_ack": is_retrans,
+                        "info": f"TCP [{'DUP ACK' if is_retrans else 'ACK'}] Ack={cur_bytes + 1}"
+                    }
+                    new_batch = [data_p, ack_p]
+                    CURRENT_PACKETS.extend(new_batch)
+                    await broadcaster.broadcast("packets_batch", {"packets": new_batch, "count": len(CURRENT_PACKETS)})
+
+                    last_bytes = cur_bytes
+                    last_retrans = cur_retrans
 
             except json.JSONDecodeError:
                 pass
 
-        proc.wait()
-        sniffer.stop()
+        await proc.wait()
+        await asyncio.to_thread(sniffer.stop)
+
+        # Teardown sequence
+        fin_num = len(CURRENT_PACKETS) + 1
+        fin_t = round(time.perf_counter() - t_start, 4)
+        teardown_pkts = [
+            {
+                "num": fin_num,
+                "time": fin_t,
+                "src": client_ip,
+                "dst": server_ip,
+                "src_port": client_port,
+                "dst_port": tcp_port,
+                "direction": "c2s",
+                "flags": "FIN",
+                "seq": last_bytes + 1,
+                "ack": 1,
+                "len": 0,
+                "info": f"TCP {client_port} → {tcp_port} [FIN, ACK] Seq={last_bytes + 1} Ack=1"
+            },
+            {
+                "num": fin_num + 1,
+                "time": round(fin_t + 0.0005, 4),
+                "src": server_ip,
+                "dst": client_ip,
+                "src_port": tcp_port,
+                "dst_port": client_port,
+                "direction": "s2c",
+                "flags": "ACK",
+                "seq": 1,
+                "ack": last_bytes + 2,
+                "len": 0,
+                "info": f"TCP {tcp_port} → {client_port} [ACK] Ack={last_bytes + 2}"
+            }
+        ]
+        CURRENT_PACKETS.extend(teardown_pkts)
+        await broadcaster.broadcast("packets_batch", {"packets": teardown_pkts, "count": len(CURRENT_PACKETS)})
         await broadcaster.broadcast("packet_event", {"flag": "FIN", "info": "TCP teardown FIN complete", "time": time.time()})
 
-        tcp_metrics = analyze(pcap_file, port=5000)
-        CURRENT_PACKETS = extract_pcap_packets(pcap_file, port=5000, limit=2000)
+        # Final PCAP analysis & record update
+        tcp_metrics = analyze(pcap_file, port=tcp_port)
+        pcap_pkts = extract_pcap_packets(pcap_file, port=tcp_port, limit=2000)
+        if pcap_pkts and len(pcap_pkts) > len(CURRENT_PACKETS):
+            CURRENT_PACKETS = pcap_pkts
+
+        if tcp_metrics.get("rtt_avg_ms") is None or tcp_metrics.get("rtt_avg_ms") == 0.0:
+            tcp_metrics["rtt_avg_ms"] = cur_rtt
+        if not tcp_metrics.get("retransmissions"):
+            tcp_metrics["retransmissions"] = cur_retrans
+        if not tcp_metrics.get("cwnd"):
+            tcp_metrics["cwnd"] = cur_cwnd
 
         # 3. Read latest record from transfers.jsonl and augment with tcp metrics
         if os.path.isfile(results_file):

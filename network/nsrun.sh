@@ -23,4 +23,9 @@ if [ "$EUID" -ne 0 ]; then
   RUN_SUDO="sudo"
 fi
 
+if ! command -v ip >/dev/null 2>&1; then
+  # Fallback to direct execution when ip netns is unavailable (e.g. macOS)
+  exec "$@"
+fi
+
 exec $RUN_SUDO ip netns exec "$NS" "$@"

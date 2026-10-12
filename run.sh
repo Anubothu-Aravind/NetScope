@@ -15,15 +15,16 @@ if [ ! -f ".venv/bin/uvicorn" ]; then
 fi
 
 # --- Namespace testbed check ---
-NSRUN_STATUS=0
 USE_NETNS=0
-if [ -f "/opt/netscope/netns_setup.sh" ]; then
-    sudo -n /opt/netscope/netns_setup.sh status > /dev/null 2>&1 || NSRUN_STATUS=$?
-    if [ "$NSRUN_STATUS" -ne 0 ]; then
+if command -v ip > /dev/null 2>&1 && [ -f "/opt/netscope/netns_setup.sh" ]; then
+    if sudo -n /opt/netscope/netns_setup.sh status > /dev/null 2>&1; then
+        USE_NETNS=1
+    else
         echo "[*] Bringing up network namespaces..."
-        sudo -n /opt/netscope/netns_setup.sh up || true
+        if sudo -n /opt/netscope/netns_setup.sh up > /dev/null 2>&1; then
+            USE_NETNS=1
+        fi
     fi
-    USE_NETNS=1
 fi
 
 # Track PIDs for clean single-Ctrl+C termination
@@ -49,15 +50,22 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 1. Start TCP Server in ns-server (or host fallback)
-echo "[*] Starting TCP server on port 5000..."
+TCP_PORT=5000
+if [ "$USE_NETNS" -eq 0 ]; then
+    if lsof -Pi :5000 -sTCP:LISTEN >/dev/null 2>&1 || [ "$(uname -s)" = "Darwin" ]; then
+        TCP_PORT=5001
+    fi
+fi
+export NETSCOPE_PORT="$TCP_PORT"
+echo "[*] Starting TCP server on port $TCP_PORT..."
 if [ "$USE_NETNS" -eq 1 ]; then
     sudo -n /opt/netscope/nsrun.sh ns-server \
         "$REPO/.venv/bin/python" "$REPO/server/tcp_server.py" \
-        --host 0.0.0.0 --port 5000 --storage-dir "$REPO/results/server_storage" &
+        --host 0.0.0.0 --port "$TCP_PORT" --storage-dir "$REPO/results/server_storage" &
     TCP_PID=$!
 else
     .venv/bin/python server/tcp_server.py \
-        --host 0.0.0.0 --port 5000 --storage-dir results/server_storage &
+        --host 0.0.0.0 --port "$TCP_PORT" --storage-dir results/server_storage &
     TCP_PID=$!
 fi
 
@@ -67,14 +75,18 @@ echo "[*] Starting FastAPI Backend on port 8000..."
 BACKEND_PID=$!
 
 # 3. Start Desktop React Vite app on port 5173
-echo "[*] Starting Desktop Frontend on port 5173..."
-npm --prefix frontend/desktop run dev -- --port 5173 --host 0.0.0.0 > /dev/null 2>&1 &
-DESKTOP_PID=$!
+if command -v npm > /dev/null 2>&1; then
+    echo "[*] Starting Desktop Frontend on port 5173..."
+    npm --prefix frontend/desktop run dev -- --port 5173 --host 0.0.0.0 > /dev/null 2>&1 &
+    DESKTOP_PID=$!
 
-# 4. Start Mobile React Vite app on port 5174
-echo "[*] Starting Mobile Frontend on port 5174..."
-npm --prefix frontend/mobile run dev -- --port 5174 --host 0.0.0.0 > /dev/null 2>&1 &
-MOBILE_PID=$!
+    # 4. Start Mobile React Vite app on port 5174
+    echo "[*] Starting Mobile Frontend on port 5174..."
+    npm --prefix frontend/mobile run dev -- --port 5174 --host 0.0.0.0 > /dev/null 2>&1 &
+    MOBILE_PID=$!
+else
+    echo "[!] npm not found: React frontends not started. (Install Node.js via 'brew install node' to run them)"
+fi
 
 sleep 2
 
@@ -83,11 +95,11 @@ echo " NetScope Orchestration Suite Running"
 echo " Backend API:      http://localhost:8000"
 echo " Desktop Frontend: http://localhost:5173"
 echo " Mobile Peer App:  http://localhost:5174"
-echo " TCP Server:       Port 5000 (ns-server)"
+echo " TCP Server:       Port 5000"
 echo " Stop All:         Ctrl+C"
 echo "============================================================"
 
-# Try to open desktop app in browser
-(sleep 1 && xdg-open "http://localhost:5173" 2>/dev/null) &
+# Try to open desktop app or API in browser
+(sleep 1 && (open "http://localhost:5173" 2>/dev/null || xdg-open "http://localhost:5173" 2>/dev/null || open "http://localhost:8000" 2>/dev/null || true)) &
 
 wait

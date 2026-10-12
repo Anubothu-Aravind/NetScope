@@ -29,13 +29,31 @@ import subprocess
 from typing import Optional
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from common.protocol import get_default_port
 
 
 class Sniffer:
-    def __init__(self, iface: str = "veth-c", port: int = 5000,
+    def __init__(self, iface: Optional[str] = None, port: Optional[int] = None,
                  out_path: str = "capture.pcap", ns: Optional[str] = None):
+        if iface is None:
+            if ns:
+                iface = "veth-c"
+            elif sys.platform == "darwin":
+                iface = "lo0"
+            else:
+                iface = "lo"
+
+        # On macOS, if interface is eth0, veth-c, or lo, use lo0 for loopback
+        if sys.platform == "darwin" and iface in ("eth0", "veth-c", "lo", "127.0.0.1"):
+            iface = "lo0"
+        elif not ns and iface in ("eth0", "veth-c"):
+            iface = "lo"
+
         self.iface = iface
-        self.port = port
+        self.port = port if port is not None else get_default_port()
         self.out_path = os.path.abspath(out_path)
         self.ns = ns
         self.process: Optional[subprocess.Popen] = None
@@ -109,6 +127,12 @@ class Sniffer:
         if not started:
             # Give it a little more time even if we didn't see the banner
             time.sleep(0.5)
+
+        if self.process.poll() is not None:
+            err = self.process.stderr.read() if self.process.stderr else ""
+            print(f"[SNIFFER ERROR] tshark exited unexpectedly: {err.strip()}")
+            self.process = None
+            return False
 
         print("[SNIFFER] Capture active.\n")
         return True
@@ -191,9 +215,10 @@ class Sniffer:
 
 
 def main():
+    default_iface = "lo0" if sys.platform == "darwin" else "veth-c"
     parser = argparse.ArgumentParser(description="NetScope tshark Packet Sniffer")
-    parser.add_argument("--iface", default="veth-c", help="Network interface (default: veth-c)")
-    parser.add_argument("--port", type=int, default=5000, help="TCP port to filter (default: 5000)")
+    parser.add_argument("--iface", default=default_iface, help=f"Network interface (default: {default_iface})")
+    parser.add_argument("--port", type=int, default=get_default_port(), help="TCP port to filter (default: auto)")
     parser.add_argument("--out", default="capture.pcap", help="Output PCAP file path")
     parser.add_argument("--ns", default=None, help="Optional network namespace (e.g. ns-client)")
     args = parser.parse_args()

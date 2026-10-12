@@ -29,6 +29,35 @@ if [ "$EUID" -ne 0 ]; then
   RUN_SUDO="sudo"
 fi
 
+if ! command -v ip >/dev/null 2>&1; then
+  case "$ACTION" in
+    up)
+      echo "=========================================================="
+      echo " NetScope Virtual Testbed"
+      echo "=========================================================="
+      echo "[!] Linux 'ip' command not found."
+      echo "    Network namespaces (ip netns) require Linux kernel support."
+      echo "    On macOS/Darwin, NetScope operates in host-only fallback mode."
+      exit 0
+      ;;
+    down)
+      echo "[*] Linux 'ip' command not found. Nothing to tear down."
+      exit 0
+      ;;
+    status)
+      echo "=== NetScope Testbed Status ==="
+      echo "ns-client: NOT AVAILABLE (requires Linux iproute2)"
+      echo "ns-server: NOT AVAILABLE (requires Linux iproute2)"
+      echo "[*] NetScope operates in host-only fallback mode (localhost:5000)."
+      exit 0
+      ;;
+    *)
+      echo "Usage: $0 {up|down|status}"
+      exit 1
+      ;;
+  esac
+fi
+
 case "$ACTION" in
   up)
     echo "=========================================================="

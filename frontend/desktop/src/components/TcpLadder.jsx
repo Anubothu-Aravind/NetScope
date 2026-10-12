@@ -101,10 +101,12 @@ export default function TcpLadder({ packets = [] }) {
 
         const srcStr = String(pkt.src || '').toLowerCase();
         const isClientToServer =
+          pkt.direction === 'c2s' ||
           srcStr.includes('client') ||
           srcStr.includes('10.10.0.1') ||
-          pkt.direction === 'c2s' ||
-          pkt.dst_port === 5000;
+          pkt.dst_port === 5000 ||
+          pkt.dst_port === 5001 ||
+          pkt.dst_port === 5002;
 
         const startX = isClientToServer ? clientX : serverX;
         const endX = isClientToServer ? serverX : clientX;

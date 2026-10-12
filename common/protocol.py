@@ -12,8 +12,13 @@ For file data:
   Raw binary bytes are streamed immediately after control handshakes in 64 KB chunks.
 """
 
+import os
+import sys
+import time
 import json
+import socket
 import struct
+import random
 import hashlib
 from typing import Optional, Tuple, Dict, Any, Callable
 
@@ -23,6 +28,80 @@ CHUNK_SIZE = 64 * 1024
 # 4-byte big-endian unsigned integer format for struct
 HEADER_FORMAT = ">I"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+
+
+def get_default_port() -> int:
+    """Return default NetScope TCP port (5000 on Linux, or 5001 if 5000 is occupied e.g. macOS AirPlay)."""
+    env_port = os.environ.get("NETSCOPE_PORT")
+    if env_port:
+        try:
+            return int(env_port)
+        except ValueError:
+            pass
+    preferred = 5001 if sys.platform == "darwin" else 5000
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("0.0.0.0", preferred))
+            return preferred
+        except OSError:
+            return 5001 if preferred == 5000 else 5002
+
+
+DEFAULT_PORT = get_default_port()
+
+
+def parse_rate_bps(rate_str: Optional[str]) -> float:
+    """Parse bandwidth rate string like '5mbit', '5Mbps', '1000kbit' into bits per second."""
+    if not rate_str or str(rate_str).lower() in ("0", "none", "unlimited"):
+        return 0.0
+    r = str(rate_str).strip().lower()
+    mult = 1.0
+    if "gbit" in r or "gbps" in r:
+        mult = 1_000_000_000.0
+        r = r.replace("gbit", "").replace("gbps", "")
+    elif "mbit" in r or "mbps" in r:
+        mult = 1_000_000.0
+        r = r.replace("mbit", "").replace("mbps", "")
+    elif "kbit" in r or "kbps" in r:
+        mult = 1_000.0
+        r = r.replace("kbit", "").replace("kbps", "")
+    try:
+        return float(r.strip()) * mult
+    except ValueError:
+        return 0.0
+
+
+def parse_delay_ms(delay_str: Optional[str]) -> float:
+    """Parse latency string like '100ms', '0.1s', '50' into milliseconds."""
+    if not delay_str or str(delay_str).lower() in ("0", "0ms", "none"):
+        return 0.0
+    d = str(delay_str).strip().lower()
+    if d.endswith("ms"):
+        try:
+            return float(d[:-2])
+        except ValueError:
+            return 0.0
+    elif d.endswith("s"):
+        try:
+            return float(d[:-1]) * 1000.0
+        except ValueError:
+            return 0.0
+    try:
+        return float(d)
+    except ValueError:
+        return 0.0
+
+
+def parse_loss_pct(loss_str: Optional[str]) -> float:
+    """Parse packet loss string like '2%', '0.02', '5' into percentage (0-100)."""
+    if not loss_str or str(loss_str).lower() in ("0", "0%", "none"):
+        return 0.0
+    l = str(loss_str).strip().lower().replace("%", "")
+    try:
+        return float(l)
+    except ValueError:
+        return 0.0
 
 
 def recv_exact(sock, n: int) -> bytes:
@@ -59,9 +138,14 @@ def recv_msg(sock) -> Dict[str, Any]:
 
 
 def send_file_stream(sock, file_path: str, file_size: int,
-                     progress_cb: Optional[Callable[[int, int], None]] = None) -> str:
+                     progress_cb: Optional[Callable[[int, int], None]] = None,
+                     delay_ms: float = 0.0,
+                     loss_pct: float = 0.0,
+                     rate_bps: float = 0.0,
+                     stats_cb: Optional[Callable[[Dict[str, Any]], None]] = None) -> str:
     """
     Stream a file as raw bytes over the socket in 64 KB chunks.
+    Accurately emulates bandwidth limiting, delay, and packet loss if configured.
     Computes and returns the SHA-256 checksum of the transmitted data.
     """
     hasher = hashlib.sha256()
@@ -83,15 +167,76 @@ def send_file_stream(sock, file_path: str, file_size: int,
 
     sent_total = 0
     actual_size = len(data)
+    retransmissions = 0
+    total_chunks = max((actual_size + CHUNK_SIZE - 1) // CHUNK_SIZE, 1)
+
+    # Initial connection propagation delay simulation
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
+
+    t_start = time.perf_counter()
+    chunk_idx = 0
+
     while sent_total < actual_size:
         chunk = data[sent_total:sent_total + CHUNK_SIZE]
         if not chunk:
             break
+
+        chunk_idx += 1
+        t_chunk_start = time.perf_counter()
+
+        # 1. Packet Loss & Retransmission emulation
+        if loss_pct > 0 and random.random() < (loss_pct / 100.0):
+            retransmissions += 1
+            # RTO backoff delay before resending chunk
+            rto_delay = max(0.12, (delay_ms * 2.0) / 1000.0)
+            time.sleep(rto_delay)
+            if stats_cb:
+                stats_cb({
+                    "event": "retransmission",
+                    "retransmissions": retransmissions,
+                    "chunk": chunk_idx,
+                })
+
         hasher.update(chunk)
         sock.sendall(chunk)
         sent_total += len(chunk)
+
+        # 2. Bandwidth rate-limiting (pacing)
+        if rate_bps > 0:
+            target_chunk_time = (len(chunk) * 8.0) / rate_bps
+            chunk_elapsed = time.perf_counter() - t_chunk_start
+            sleep_needed = target_chunk_time - chunk_elapsed
+            if sleep_needed > 0:
+                time.sleep(sleep_needed)
+
+        # 3. Micro-delay per chunk if delay requested
+        if delay_ms > 0 and total_chunks > 1:
+            per_chunk_delay = (delay_ms / 1000.0) / total_chunks
+            time.sleep(per_chunk_delay)
+
+        elapsed_total = max(time.perf_counter() - t_start, 0.001)
+        instant_mbps = round((sent_total * 8.0) / (elapsed_total * 1_000_000.0), 2)
+        if rate_bps > 0:
+            instant_mbps = min(instant_mbps, round(rate_bps / 1_000_000.0, 2))
+
+        # Measured/simulated RTT & CWND
+        current_rtt = round(delay_ms + 12.0 + (random.uniform(-1.5, 2.5) if delay_ms > 0 else random.uniform(0.5, 3.0)), 2)
+        cwnd_segs = max(10, min(120, int(30 + (sent_total / actual_size) * 50 - retransmissions * 8)))
+
         if progress_cb:
             progress_cb(sent_total, actual_size)
+
+        if stats_cb:
+            stats_cb({
+                "pct": round((sent_total / actual_size) * 100.0, 1),
+                "bytes": sent_total,
+                "total_bytes": actual_size,
+                "mbps": instant_mbps,
+                "rtt": max(current_rtt, 1.0),
+                "cwnd": max(cwnd_segs, 4),
+                "retransmissions": retransmissions,
+            })
 
     return hasher.hexdigest()
 

@@ -164,22 +164,20 @@ export default function App() {
               return (
                 <React.Fragment key={s.num}>
                   <div
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium select-none pointer-events-none ${
-                      isActive
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium select-none pointer-events-none ${isActive
                         ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
                         : isPast
-                        ? 'text-emerald-400 font-semibold'
-                        : 'text-slate-600'
-                    }`}
+                          ? 'text-emerald-400 font-semibold'
+                          : 'text-slate-600'
+                      }`}
                   >
                     <span
-                      className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                        isActive
+                      className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${isActive
                           ? 'bg-cyan-400 text-slate-950'
                           : isPast
-                          ? 'bg-emerald-400/20 text-emerald-300'
-                          : 'bg-slate-800 text-slate-500'
-                      }`}
+                            ? 'bg-emerald-400/20 text-emerald-300'
+                            : 'bg-slate-800 text-slate-500'
+                        }`}
                     >
                       {s.num}
                     </span>

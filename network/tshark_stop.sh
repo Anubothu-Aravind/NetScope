@@ -24,9 +24,16 @@ if ! [[ "$PID" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-if [ ! -d "/proc/$PID" ]; then
-    echo "[tshark_stop] PID $PID does not exist (already gone)."
-    exit 0
+if [ -d "/proc" ]; then
+    if [ ! -d "/proc/$PID" ]; then
+        echo "[tshark_stop] PID $PID does not exist (already gone)."
+        exit 0
+    fi
+else
+    if ! kill -0 "$PID" 2>/dev/null; then
+        echo "[tshark_stop] PID $PID does not exist (already gone)."
+        exit 0
+    fi
 fi
 
 echo "[tshark_stop] Sending SIGINT to PID $PID..."

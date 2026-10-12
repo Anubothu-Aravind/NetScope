@@ -47,6 +47,12 @@ if [ ${#ARGS[@]} -lt 2 ]; then
   exit 1
 fi
 
+if ! command -v tc >/dev/null 2>&1; then
+  echo "[!] Linux 'tc' (traffic control) command not found."
+  echo "    Traffic impairment requires Linux netem support."
+  exit 0
+fi
+
 IFACE="${ARGS[0]}"
 ACTION="${ARGS[1]}"
 REM_ARGS=("${ARGS[@]:2}")

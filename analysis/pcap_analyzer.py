@@ -26,11 +26,20 @@ import subprocess
 from typing import Dict, Any, Optional, List
 
 
-def analyze(pcap_path: str, port: int = 5000) -> Dict[str, Any]:
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from common.protocol import get_default_port
+
+
+def analyze(pcap_path: str, port: Optional[int] = None) -> Dict[str, Any]:
     """
     Dissect a PCAP file using tshark and return structured TCP metrics.
     Never crashes; returns None for metrics that cannot be computed.
     """
+    if port is None:
+        port = get_default_port()
     metrics: Dict[str, Any] = {
         "handshake_ms": None,
         "initial_rtt_ms": None,

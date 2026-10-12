@@ -20,9 +20,12 @@ import argparse
 import threading
 import base64
 import hashlib
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-from cryptography.fernet import Fernet
+try:
+    from cryptography.fernet import Fernet
+except ImportError:
+    Fernet = None
 
 # In-memory dictionary storing encryption keys by run_id
 ENCRYPTION_KEYS: Dict[str, bytes] = {}
@@ -43,13 +46,14 @@ from common.protocol import (
     send_file_stream,
     recv_file_stream,
     compute_sha256,
+    get_default_port,
 )
 
 
 class TCPServer:
-    def __init__(self, host: str = "0.0.0.0", port: int = 5000, storage_dir: str = "server_storage"):
+    def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, storage_dir: str = "server_storage"):
         self.host = host
-        self.port = port
+        self.port = port if port is not None else get_default_port()
         self.storage_dir = os.path.abspath(storage_dir)
         os.makedirs(self.storage_dir, exist_ok=True)
         self.server_sock = None
@@ -60,7 +64,16 @@ class TCPServer:
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # Enable SO_REUSEADDR so server can be restarted immediately without TIME_WAIT errors
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_sock.bind((self.host, self.port))
+        try:
+            self.server_sock.bind((self.host, self.port))
+        except OSError as e:
+            if self.port == 5000:
+                print(f"[SERVER WARNING] Port 5000 in use (e.g. macOS AirPlay). Falling back to port 5001...")
+                self.port = 5001
+                self.server_sock.bind((self.host, self.port))
+            else:
+                raise e
+
         self.server_sock.listen(10)
         self.is_running = True
 
@@ -258,7 +271,7 @@ class TCPServer:
 def main():
     parser = argparse.ArgumentParser(description="NetScope TCP File Transfer Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=5000, help="TCP port to listen on (default: 5000)")
+    parser.add_argument("--port", type=int, default=get_default_port(), help="TCP port to listen on (default: auto)")
     parser.add_argument("--storage-dir", default="server_storage", help="Directory where files are stored")
     args = parser.parse_args()
 

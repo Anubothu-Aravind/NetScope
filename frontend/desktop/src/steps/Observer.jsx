@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Activity, Gauge, Clock, BarChart3, Repeat, ArrowRight, CheckCircle } from 'lucide-react';
 import TcpLadder from '../components/TcpLadder';
 import LiveChart from '../components/LiveChart';
@@ -32,6 +32,7 @@ export default function Observer({
 
   const [isCompleted, setIsCompleted] = useState(false);
   const [finalData, setFinalData] = useState(null);
+  const advanceTimeoutRef = useRef(null);
 
   // Listen to WebSocket passed as prop from App.jsx
   useEffect(() => {
@@ -96,7 +97,7 @@ export default function Observer({
           }
         }
 
-        // 3. transfer_complete: set finalData and auto-advance to Results
+        // 3. transfer_complete: set finalData and allow user review of live diagram
         if (type === 'transfer_complete') {
           console.log('[Observer] Received transfer_complete', data);
           setIsCompleted(true);
@@ -110,9 +111,10 @@ export default function Observer({
           if (data.packets && data.packets.length > 0 && setCapturedPackets) {
             setCapturedPackets(data.packets);
           }
-          setTimeout(() => {
+          if (advanceTimeoutRef.current) clearTimeout(advanceTimeoutRef.current);
+          advanceTimeoutRef.current = setTimeout(() => {
             onAdvance(completionData);
-          }, 800);
+          }, 3000);
         }
       } catch (err) {
         console.error('[Observer WS Error]', err);
@@ -122,6 +124,7 @@ export default function Observer({
     ws.addEventListener('message', handleMessage);
     return () => {
       ws.removeEventListener('message', handleMessage);
+      if (advanceTimeoutRef.current) clearTimeout(advanceTimeoutRef.current);
     };
   }, [ws, setCapturedPackets, setTelemetryHistory]);
 
@@ -148,7 +151,10 @@ export default function Observer({
         {/* No buttons until transfer_complete received */}
         {isCompleted && (
           <button
-            onClick={() => onAdvance(finalData)}
+            onClick={() => {
+              if (advanceTimeoutRef.current) clearTimeout(advanceTimeoutRef.current);
+              onAdvance(finalData);
+            }}
             className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-white font-bold rounded-lg shadow-lg shadow-emerald-500/20 text-sm transition-all animate-bounce cursor-pointer"
           >
             <CheckCircle className="w-4 h-4" /> View Results <ArrowRight className="w-4 h-4" />
@@ -250,7 +256,9 @@ export default function Observer({
         <div className="lg:col-span-6 bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-slate-200">Dissected Packets</h3>
-            <span className="text-[11px] font-mono text-slate-400">Port 5000</span>
+            <span className="text-[11px] font-mono text-slate-400">
+              {capturedPackets[0]?.dst_port ? `Port ${capturedPackets[0].dst_port}` : 'TCP Stream'}
+            </span>
           </div>
           <div className="overflow-x-auto max-h-[350px] overflow-y-auto border border-slate-800 rounded-xl">
             <table className="w-full text-left text-xs font-mono">
@@ -279,8 +287,8 @@ export default function Observer({
                         pkt.is_retrans
                           ? 'bg-rose-500/10 text-rose-300'
                           : pkt.flags?.includes('SYN')
-                          ? 'bg-emerald-500/10 text-emerald-300'
-                          : 'hover:bg-slate-800/30 text-slate-300'
+                            ? 'bg-emerald-500/10 text-emerald-300'
+                            : 'hover:bg-slate-800/30 text-slate-300'
                       }
                     >
                       <td className="px-3 py-1.5 text-slate-500">{pkt.num || idx + 1}</td>
