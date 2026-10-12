@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
-import { Sliders, Clock, AlertTriangle, Gauge, ArrowRight, AlertCircle, RefreshCw } from 'lucide-react';
+import { Sliders, Clock, AlertTriangle, Gauge, ArrowRight, AlertCircle, RefreshCw, FileText } from 'lucide-react';
 
 /**
- * Step 2: Impairments Component (Task 5)
+ * Step 2: Impairments & Payload Selection Component
  * 
- * - Three number inputs: Delay (ms), Loss (%), Bandwidth (kbps, 0 = unlimited)
- * - One "Save and Start Transfer" button
- * - On click: first POST /api/impair with the values, then POST /api/transfer, then call onAdvance() prop
- * - Show error message inline if either call fails
+ * - Kernel traffic control parameters: Delay (ms), Loss (%), Bandwidth (kbps, 0 = unlimited)
+ * - Deterministic sample test payload sizes: 1 MB (Small), 10 MB (Medium), 50 MB (Large)
+ * - Click protection preventing duplicate transfer starts
  */
 export default function Impairments({ onAdvance, ws, session }) {
   const [delay, setDelay] = useState(0); // ms
@@ -38,6 +37,7 @@ export default function Impairments({ onAdvance, ws, session }) {
   }, [ws, onAdvance]);
 
   const handleSaveAndStart = async () => {
+    if (loading) return;
     setLoading(true);
     setError(null);
 
@@ -64,14 +64,16 @@ export default function Impairments({ onAdvance, ws, session }) {
       }
 
       // 2. POST /api/transfer with session_id
+      const transferBody = {
+        mode: 'send',
+        scenario: 'Manual',
+        session_id: session?.session_id,
+      };
+
       const transferRes = await fetch('/api/transfer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'send',
-          scenario: 'Manual',
-          session_id: session?.session_id,
-        }),
+        body: JSON.stringify(transferBody),
       });
 
       if (!transferRes.ok) {
@@ -84,7 +86,6 @@ export default function Impairments({ onAdvance, ws, session }) {
     } catch (err) {
       console.error(err);
       setError(err.message);
-    } finally {
       setLoading(false);
     }
   };
@@ -95,10 +96,10 @@ export default function Impairments({ onAdvance, ws, session }) {
       <div className="text-center space-y-2">
         <h2 className="text-2xl font-bold text-white tracking-tight flex items-center justify-center gap-2">
           <Sliders className="w-6 h-6 text-cyan-400" />
-          Network Impairments
+          Network Impairments & Transfer
         </h2>
         <p className="text-sm text-slate-400">
-          Configure kernel netem traffic control parameters prior to starting the TCP transfer.
+          Configure kernel network traffic control parameters. Payload is configured on the client device.
         </p>
       </div>
 
@@ -109,8 +110,30 @@ export default function Impairments({ onAdvance, ws, session }) {
         </div>
       )}
 
-      {/* Inputs Card */}
+      {/* Main Card */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+        {/* Client-Selected Payload Info Card */}
+        <div className="p-4 bg-slate-950/70 border border-slate-800 rounded-xl flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-[11px] text-slate-400 block font-medium">Client Test Payload</span>
+              <span className="text-sm font-bold font-mono text-cyan-300">
+                {session?.payload_size
+                  ? `${session.payload_size} (Deterministic Benchmark)`
+                  : (session?.sender_filename
+                      ? session.sender_filename
+                      : '1 MB (Standard Benchmark)')}
+              </span>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-full text-[10px] font-mono uppercase font-bold tracking-wider bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+            Selected on Client
+          </span>
+        </div>
+
         {/* Delay Input */}
         <div className="space-y-2">
           <label className="text-sm font-semibold text-slate-200 flex items-center gap-2">
@@ -121,10 +144,11 @@ export default function Impairments({ onAdvance, ws, session }) {
             type="number"
             min="0"
             max="2000"
+            disabled={loading}
             value={delay}
             onChange={(e) => setDelay(Math.max(0, Number(e.target.value)))}
             placeholder="0"
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all disabled:opacity-50"
           />
           <p className="text-xs text-slate-500">Injects artificial packet propagation latency (0 = none).</p>
         </div>
@@ -140,10 +164,11 @@ export default function Impairments({ onAdvance, ws, session }) {
             min="0"
             max="100"
             step="0.5"
+            disabled={loading}
             value={loss}
             onChange={(e) => setLoss(Math.max(0, Math.min(100, Number(e.target.value))))}
             placeholder="0"
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all"
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all disabled:opacity-50"
           />
           <p className="text-xs text-slate-500">Simulates random packet drops on the interface (0–100%).</p>
         </div>
@@ -158,15 +183,16 @@ export default function Impairments({ onAdvance, ws, session }) {
             type="number"
             min="0"
             step="100"
+            disabled={loading}
             value={bandwidth}
             onChange={(e) => setBandwidth(Math.max(0, Number(e.target.value)))}
             placeholder="0"
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all disabled:opacity-50"
           />
           <p className="text-xs text-slate-500">Rate limits egress traffic rate in kilobits per second (0 = unconstrained).</p>
         </div>
 
-        {/* Save and Start Transfer Button */}
+        {/* Save and Start Transfer Button with click protection */}
         <button
           onClick={handleSaveAndStart}
           disabled={loading}

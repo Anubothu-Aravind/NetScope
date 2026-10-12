@@ -95,7 +95,7 @@ echo " NetScope Orchestration Suite Running"
 echo " Backend API:      http://localhost:8000"
 echo " Desktop Frontend: http://localhost:5173"
 echo " Mobile Peer App:  http://localhost:5174"
-echo " TCP Server:       Port 5000"
+echo " TCP Server:       Port $TCP_PORT"
 echo " Stop All:         Ctrl+C"
 echo "============================================================"
 

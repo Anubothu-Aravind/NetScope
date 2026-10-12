@@ -9,7 +9,8 @@ import {
   ShieldCheck, 
   Radio, 
   UploadCloud,
-  Users
+  Users,
+  Zap
 } from 'lucide-react';
 
 /**
@@ -58,12 +59,17 @@ export default function MobileClient() {
   const [isSessionFull, setIsSessionFull] = useState(false);
   const [clientInfo, setClientInfo] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [payloadMode, setPayloadMode] = useState('sample'); // 'sample' | 'custom'
+  const [selectedPayloadSize, setSelectedPayloadSize] = useState('1MB'); // '1MB' | '10MB' | '50MB'
   const [signalSent, setSignalSent] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [isPacketFlowing, setIsPacketFlowing] = useState(false);
   const [transferDone, setTransferDone] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [customSessionInput, setCustomSessionInput] = useState('');
+  const [showJoinOther, setShowJoinOther] = useState(false);
 
   const wsRef = useRef(null);
 
@@ -81,13 +87,44 @@ export default function MobileClient() {
     setSessionId(sid);
   }, []);
 
-  // Check available roles when sessionId is resolved
-  const checkAvailableRoles = async () => {
+  // Check available roles or attempt seamless session resumption
+  const checkAvailableRoles = async (forceClean = false) => {
     if (!sessionId) return;
     try {
       setIsLoading(true);
       setError(null);
       setIsSessionFull(false);
+
+      if (!forceClean) {
+        // Check for saved session credentials to seamlessly reconnect
+        const savedClientId = sessionStorage.getItem(`netscope_${sessionId}_client_id`);
+        const savedRole = sessionStorage.getItem(`netscope_${sessionId}_role`);
+        const savedName = sessionStorage.getItem(`netscope_${sessionId}_client_name`);
+
+        if (savedClientId && savedRole) {
+          try {
+            const reconnectRes = await fetch(`/api/session/${sessionId}/clients`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                client_name: savedName || `Mobile-${savedRole}`,
+                role: savedRole,
+                client_id: savedClientId,
+                reconnect: true,
+              }),
+            });
+            if (reconnectRes.ok) {
+              const recData = await reconnectRes.json();
+              setClientInfo(recData.client || recData);
+              setRole(savedRole);
+              setIsLoading(false);
+              return;
+            }
+          } catch (e) {
+            console.warn('[MobileClient] Reconnection attempt failed:', e);
+          }
+        }
+      }
 
       const res = await fetch(`/api/session/${sessionId}/available-role`);
       if (!res.ok) {
@@ -98,19 +135,15 @@ export default function MobileClient() {
       setAvailableRoles(available);
 
       if (available.length === 0) {
-        // Both roles taken: session is full
         setIsSessionFull(true);
         setIsLoading(false);
       } else if (available.length === 1) {
-        // If one role is already taken, skip the choice screen entirely
-        // and automatically register with the only remaining role, showing a message
         const remaining = available[0];
         setAutoJoining(remaining);
         setTimeout(() => {
           registerWithRole(remaining);
-        }, 800);
+        }, 600);
       } else {
-        // Both roles available: let device choose
         setIsLoading(false);
       }
     } catch (err) {
@@ -149,9 +182,17 @@ export default function MobileClient() {
       }
 
       const data = await res.json();
-      setClientInfo(data.client || data);
+      const joinedClient = data.client || data;
+      setClientInfo(joinedClient);
       setRole(chosenRole);
       setAutoJoining(null);
+
+      // Persist in sessionStorage for page refresh resilience
+      if (joinedClient?.client_id) {
+        sessionStorage.setItem(`netscope_${sessionId}_client_id`, joinedClient.client_id);
+        sessionStorage.setItem(`netscope_${sessionId}_role`, chosenRole);
+        sessionStorage.setItem(`netscope_${sessionId}_client_name`, clientName);
+      }
     } catch (err) {
       console.error('Registration error:', err);
       setError(err.message);
@@ -170,23 +211,57 @@ export default function MobileClient() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    ws.onopen = () => {
+      console.log('[Mobile WS] Connected to session:', sessionId);
+      if (clientInfo?.client_id) {
+        ws.send(JSON.stringify({
+          type: 'IDENTIFY',
+          session_id: sessionId,
+          client_id: clientInfo.client_id,
+        }));
+      }
+    };
+
+    // Periodic heartbeat every 15s to maintain active registration
+    const hbInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN && clientInfo?.client_id) {
+        ws.send(JSON.stringify({
+          type: 'HEARTBEAT',
+          session_id: sessionId,
+          client_id: clientInfo.client_id,
+        }));
+      }
+    }, 15000);
+
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         const type = (msg.type || msg.event || '').toLowerCase();
         const data = msg.data || msg;
 
-        // Receiver: listen for first packets_batch event to start animation
-        if (type === 'packets_batch' || type === 'packet_live') {
+        // Reset state when server resets session for another run
+        if (type === 'session_reset') {
+          console.log('[Mobile WS] Session reset received, resetting views');
+          setTransferDone(false);
+          setIsPacketFlowing(false);
+          setSignalSent(false);
+          setIsUploading(false);
+          setResult(null);
+          setSelectedFile(null);
+          setError(null);
+          return;
+        }
+
+        // Live packets and transfer start
+        if (type === 'packets_batch' || type === 'packet_live' || type === 'transfer_started') {
           setIsPacketFlowing(true);
         } else if (type === 'transfer_complete') {
-          // Stop animation on transfer_complete
           setIsPacketFlowing(false);
           setTransferDone(true);
 
           const rec = data.record || data;
           const rId = rec.run_id || rec.runId || data.run_id || data.runId || '';
-          const fName = rec.file || rec.filename || data.file || data.filename || selectedFile?.name || 'transferred_file.bin';
+          const fName = rec.file || rec.filename || data.file || data.filename || (payloadMode === 'sample' ? `sample_${selectedPayloadSize.toLowerCase()}.bin` : selectedFile?.name) || 'transferred_file.bin';
           const shaOk = rec.sha256_ok !== undefined ? rec.sha256_ok : (data.sha256_ok !== undefined ? data.sha256_ok : true);
 
           setResult({
@@ -206,11 +281,12 @@ export default function MobileClient() {
     };
 
     return () => {
+      clearInterval(hbInterval);
       if (ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
     };
-  }, [sessionId, role, selectedFile]);
+  }, [sessionId, role, clientInfo?.client_id, selectedFile, payloadMode, selectedPayloadSize]);
 
   // Handler for Sender file selection
   const handleFileChange = (e) => {
@@ -221,38 +297,65 @@ export default function MobileClient() {
 
   // Handler for Sender Send Signal button
   const handleSendSignal = async () => {
-    if (!sessionId || !selectedFile) return;
+    if (!sessionId || isUploading) return;
     try {
-      setSignalSent(true);
+      setIsUploading(true);
       setError(null);
 
-      // 1. Upload actual file binary to /api/session/{sessionId}/upload
-      const formData = new FormData();
-      formData.append('file', selectedFile);
+      if (payloadMode === 'sample') {
+        // Deterministic binary sample payload selected on client side
+        const sampleFileName = `sample_${selectedPayloadSize.toLowerCase()}.bin`;
+        const res = await fetch(`/api/session/${sessionId}/signal/ready`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            payload_size: selectedPayloadSize,
+            filename: sampleFileName,
+          }),
+        });
 
-      const uploadRes = await fetch(`/api/session/${sessionId}/upload`, {
-        method: 'POST',
-        body: formData,
-      });
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          throw new Error(errJson.detail || 'Failed to send ready signal');
+        }
+        setSignalSent(true);
+      } else {
+        // Custom device file uploaded by client
+        if (!selectedFile) {
+          throw new Error('Please select a file to send.');
+        }
 
-      if (!uploadRes.ok) {
-        const errJson = await uploadRes.json().catch(() => ({}));
-        throw new Error(errJson.detail || 'Failed to upload selected file to session');
-      }
+        // 1. Upload actual file binary to /api/session/{sessionId}/upload
+        const formData = new FormData();
+        formData.append('file', selectedFile);
 
-      // 2. Notify session control plane that sender is ready with this file
-      const res = await fetch(`/api/session/${sessionId}/signal/ready`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: selectedFile.name }),
-      });
-      if (!res.ok) {
-        throw new Error('Failed to send ready signal');
+        const uploadRes = await fetch(`/api/session/${sessionId}/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!uploadRes.ok) {
+          const errJson = await uploadRes.json().catch(() => ({}));
+          throw new Error(errJson.detail || 'Failed to upload selected file to session');
+        }
+
+        // 2. Notify session control plane that sender is ready with this file
+        const res = await fetch(`/api/session/${sessionId}/signal/ready`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: selectedFile.name }),
+        });
+        if (!res.ok) {
+          throw new Error('Failed to send ready signal');
+        }
+        setSignalSent(true);
       }
     } catch (err) {
       console.error(err);
       setError(err.message);
       setSignalSent(false);
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -326,24 +429,70 @@ export default function MobileClient() {
               </div>
             )}
 
-            {/* 3. Session Full State */}
+            {/* 3. Session Full State with Recovery Paths */}
             {isSessionFull && !isLoading && (
-              <div className="py-8 flex flex-col items-center justify-center text-center space-y-4">
+              <div className="py-6 flex flex-col items-center justify-center text-center space-y-4">
                 <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
                   <Users className="w-7 h-7" />
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-slate-100">Session is Full</h2>
                   <p className="text-xs text-slate-400 mt-2 max-w-xs leading-relaxed">
-                    Session is full. Please ask the host to disconnect a device.
+                    Both participant slots for session <span className="font-mono text-cyan-400">{sessionId}</span> are currently occupied.
                   </p>
                 </div>
-                <button
-                  onClick={checkAvailableRoles}
-                  className="mt-3 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl text-slate-300 transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> Check Again
-                </button>
+
+                <div className="flex flex-col gap-2 w-full pt-2">
+                  <button
+                    onClick={() => checkAvailableRoles(false)}
+                    className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl text-slate-200 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> Check Again
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      sessionStorage.removeItem(`netscope_${sessionId}_client_id`);
+                      sessionStorage.removeItem(`netscope_${sessionId}_role`);
+                      sessionStorage.removeItem(`netscope_${sessionId}_client_name`);
+                      checkAvailableRoles(true);
+                    }}
+                    className="w-full py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-[11px] font-medium rounded-xl text-slate-400 transition-colors cursor-pointer"
+                  >
+                    Clear Stored Identity & Retry
+                  </button>
+
+                  <div className="pt-2 border-t border-slate-800/80">
+                    {!showJoinOther ? (
+                      <button
+                        onClick={() => setShowJoinOther(true)}
+                        className="text-xs text-cyan-400 hover:underline"
+                      >
+                        Join a different session
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2 mt-1">
+                        <input
+                          type="text"
+                          placeholder="e.g. NS-123456"
+                          value={customSessionInput}
+                          onChange={(e) => setCustomSessionInput(e.target.value.toUpperCase())}
+                          className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                        />
+                        <button
+                          onClick={() => {
+                            if (customSessionInput.trim()) {
+                              window.location.href = `/join/${customSessionInput.trim()}`;
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-lg"
+                        >
+                          Go
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -385,70 +534,152 @@ export default function MobileClient() {
         {role === 'sender' && (
           <div className="space-y-5">
             {!signalSent ? (
-              /* Step A: file input (type file) and Send Signal button disabled until file selected */
               <div className="space-y-4">
                 <div className="text-center">
                   <h2 className="text-base font-bold text-slate-100">Sender Mode</h2>
-                  <p className="text-xs text-slate-400 mt-1">Select a payload file to transfer</p>
+                  <p className="text-xs text-slate-400 mt-1">Select test payload size or upload custom file</p>
                 </div>
 
-                <div className="border-2 border-dashed border-slate-800 hover:border-cyan-500/50 transition-colors rounded-2xl p-5 text-center relative bg-slate-950/40">
-                  <input
-                    type="file"
-                    id="mobile-file-input"
-                    onChange={handleFileChange}
-                    className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                  />
-                  <div className="flex flex-col items-center pointer-events-none">
-                    <UploadCloud className="w-8 h-8 text-cyan-400 mb-2" />
-                    {selectedFile ? (
-                      <div>
-                        <p className="text-xs font-semibold text-slate-200 truncate max-w-[200px]">{selectedFile.name}</p>
-                        <p className="text-[10px] font-mono text-cyan-400 mt-0.5">{(selectedFile.size / 1024).toFixed(1)} KB</p>
-                      </div>
-                    ) : (
-                      <div>
-                        <p className="text-xs text-slate-300 font-medium">Tap to select file</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5">Any payload file</p>
-                      </div>
-                    )}
-                  </div>
+                {/* Mode Selector Tabs */}
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950/80 rounded-xl border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setPayloadMode('sample')}
+                    className={`py-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      payloadMode === 'sample'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    Test Payload
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayloadMode('custom')}
+                    className={`py-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      payloadMode === 'custom'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    Device File
+                  </button>
                 </div>
+
+                {/* Sub-view: Sample Test Payload Size Selection */}
+                {payloadMode === 'sample' && (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 px-0.5">
+                      <span>Payload Size</span>
+                      <span className="font-mono text-cyan-400 text-[10px]">Deterministic Binary</span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: '1MB', label: '1 MB', desc: 'Small' },
+                        { id: '10MB', label: '10 MB', desc: 'Medium' },
+                        { id: '50MB', label: '50 MB', desc: 'Large' },
+                      ].map((item) => {
+                        const isSelected = selectedPayloadSize === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setSelectedPayloadSize(item.id)}
+                            className={`p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-cyan-500/15 border-cyan-400 shadow-md shadow-cyan-500/10'
+                                : 'bg-slate-950/60 border-slate-800/80 hover:border-slate-700'
+                            }`}
+                          >
+                            <span className={`text-sm font-bold font-mono block ${
+                              isSelected ? 'text-cyan-300' : 'text-slate-200'
+                            }`}>
+                              {item.label}
+                            </span>
+                            <span className="text-[10px] text-slate-400 block mt-0.5">
+                              {item.desc}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-800/40 text-[11px] text-slate-300 flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span>Ready to benchmark with <strong>{selectedPayloadSize}</strong> data buffer</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sub-view: Custom File Upload */}
+                {payloadMode === 'custom' && (
+                  <div className="border-2 border-dashed border-slate-800 hover:border-cyan-500/50 transition-colors rounded-2xl p-5 text-center relative bg-slate-950/40">
+                    <input
+                      type="file"
+                      id="mobile-file-input"
+                      onChange={handleFileChange}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    />
+                    <div className="flex flex-col items-center pointer-events-none">
+                      <UploadCloud className="w-8 h-8 text-cyan-400 mb-2" />
+                      {selectedFile ? (
+                        <div>
+                          <p className="text-xs font-semibold text-slate-200 truncate max-w-[200px]">{selectedFile.name}</p>
+                          <p className="text-[10px] font-mono text-cyan-400 mt-0.5">{(selectedFile.size / 1024).toFixed(1)} KB</p>
+                        </div>
+                      ) : (
+                        <div>
+                          <p className="text-xs text-slate-300 font-medium">Tap to select file</p>
+                          <p className="text-[10px] text-slate-500 mt-0.5">Any payload file from device</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <button
                   onClick={handleSendSignal}
-                  disabled={!selectedFile}
+                  disabled={isUploading || (payloadMode === 'custom' && !selectedFile)}
                   className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg shadow-cyan-500/20 text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  <Send className="w-4 h-4" /> Send Signal
+                  {isUploading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" /> Preparing Signal...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4" />
+                      {payloadMode === 'sample' ? `Send Signal (${selectedPayloadSize})` : 'Send Signal'}
+                    </>
+                  )}
                 </button>
               </div>
             ) : !transferDone ? (
-              /* Step B after signal sent: show animated packets moving left to right using CSS keyframes, show filename, show 'Sending...' text */
               <div className="py-6 flex flex-col items-center justify-center text-center space-y-4">
                 <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 animate-pulse">
                   <Radio className="w-6 h-6" />
                 </div>
                 
                 <div>
-                  <h3 className="text-sm font-bold text-slate-200 animate-pulse">Sending...</h3>
+                  <h3 className="text-sm font-bold text-slate-200 animate-pulse">Ready & Transmitting...</h3>
                   <p className="text-xs font-mono text-cyan-400 mt-1 truncate max-w-[240px]">
-                    {selectedFile?.name || 'payload.bin'}
+                    {payloadMode === 'sample' ? `${selectedPayloadSize} Test Payload` : (selectedFile?.name || 'payload.bin')}
                   </p>
                 </div>
 
-                {/* Animated packets moving left to right */}
                 <PacketStream direction="ltr" />
-                <p className="text-[10px] font-mono text-slate-500">Live TCP transport active</p>
+                <p className="text-[10px] font-mono text-slate-500">Waiting for transfer orchestration</p>
               </div>
             ) : (
-              /* On transfer_complete: show 'Transfer Complete', SHA-256 status, no download button */
               <div className="py-6 flex flex-col items-center justify-center text-center space-y-4">
                 <CheckCircle2 className="w-14 h-14 text-emerald-400" />
                 <div>
                   <h2 className="text-base font-bold text-slate-100">Transfer Complete</h2>
                   <p className="text-xs font-mono text-cyan-400 mt-1 break-all bg-slate-950 p-2 rounded-xl border border-slate-800">
-                    {result?.filename || selectedFile?.name || 'payload.bin'}
+                    {result?.filename || (payloadMode === 'sample' ? `sample_${selectedPayloadSize.toLowerCase()}.bin` : selectedFile?.name) || 'payload.bin'}
                   </p>
                 </div>
 

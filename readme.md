@@ -1,766 +1,451 @@
-# TCP Reliability and Performance under Network Impairments
+# NetScope: TCP Reliability and Performance under Network Impairments
 
-## 1. Project Title
+> **Interactive TCP Diagnostic Suite, Kernel Impairment Emulation & Packet Analysis Platform**
 
-**TCP Reliability and Performance under Network Impairments**
-
----
-
-## 2. Original Problem Statement
-
-> Introduce controlled delay, packet loss, and bandwidth limits between a client and server. Analyse TCP connection establishment, retransmissions, throughput, and file-transfer completion time.
-
----
-
-## 3. Enhanced Project Problem Statement
-
-Modern network applications are expected to reliably transfer data even when the underlying network experiences delay, packet loss, congestion, and bandwidth limitations. TCP provides reliable, ordered data delivery using connection establishment, acknowledgements, sequence numbers, retransmissions, and congestion-control mechanisms.
-
-This project develops a TCP-based file-transfer system using two Ubuntu machines, enhanced with a user-friendly GUI and QR/link-based device discovery. One device can create a transfer session and generate a connection link or QR code. Another device can join the session by scanning the QR code or entering the generated link and then select whether to send or receive a file.
-
-The system introduces controlled network impairments such as delay, packet loss, and bandwidth limitations using Linux networking tools. Network traffic is captured and analysed using Wireshark/tshark to identify TCP connection establishment, acknowledgements, retransmissions, duplicate ACKs, and other TCP behaviour.
-
-The project measures and compares RTT, retransmissions, throughput, and file-transfer completion time under normal and impaired network conditions.
+[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-19.0-61DAFB.svg)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8.3-646CFF.svg)](https://vitejs.dev/)
+[![Wireshark](https://img.shields.io/badge/tshark-Wireshark_Dissector-1679A7.svg)](https://www.wireshark.org/)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-informational.svg)]()
 
 ---
 
-## 3.1 Quick Start and Portable Setup
+> [!NOTE]
+> **Unified Documentation:** This document is the **single source of truth** for NetScope. It consolidates the project problem statement, end-to-end architecture, step-by-step UI walkthrough with real desktop screenshots, Mermaid sequence and flow diagrams, kernel impairment mechanics, and experimental benchmarking procedures.
 
-NetScope supports macOS (Darwin), Ubuntu/Debian, Fedora/RHEL, Arch Linux, and WSL.
+---
+
+## Table of Contents
+1. [Project Overview & Problem Statement](#1-project-overview--problem-statement)
+2. [Desktop Application Walkthrough (Real Screenshots)](#2-desktop-application-walkthrough-real-screenshots)
+   - [Step 1: Session Discovery & Peer Pairing](#step-1-session-discovery--peer-pairing)
+   - [Step 2: Network Impairment Configuration](#step-2-network-impairment-configuration)
+   - [Step 3: Live Observer & Telemetry Pipeline](#step-3-live-observer--telemetry-pipeline)
+   - [Step 4: Diagnostics Dashboard & Interactive TCP Ladder](#step-4-diagnostics-dashboard--interactive-tcp-ladder)
+   - [API Reference: Swagger / OpenAPI Explorer](#api-reference-swagger--openapi-explorer)
+3. [System Architecture & Data Plane](#3-system-architecture--data-plane)
+   - [Control Plane vs. Data Plane](#control-plane-vs-data-plane)
+   - [Two-Machine Network Architecture](#two-machine-network-architecture)
+4. [Mermaid System & Protocol Diagrams](#4-mermaid-system--protocol-diagrams)
+   - [End-to-End System Workflow](#end-to-end-system-workflow)
+   - [Session & Pairing State Machine](#session--pairing-state-machine)
+   - [TCP Handshake, Impairment Drop, RTO Timeout & Retransmission Sequence](#tcp-handshake-impairment-drop-rto-timeout--retransmission-sequence)
+5. [Network Impairment Engine](#5-network-impairment-engine)
+   - [Linux Kernel `tc netem` vs. Cross-Platform Simulation](#linux-kernel-tc-netem-vs-cross-platform-simulation)
+   - [Benchmark Scenarios](#benchmark-scenarios)
+6. [Packet Dissection & Wireshark / tshark Pipeline](#6-packet-dissection--wireshark--tshark-pipeline)
+7. [Quick Start & Setup Guide](#7-quick-start--setup-guide)
+8. [REST API & WebSocket Specifications](#8-rest-api--websocket-specifications)
+9. [Academic & Viva Reference](#9-academic--viva-reference)
+
+---
+
+## 1. Project Overview & Problem Statement
+
+Modern networked applications demand reliable, predictable file delivery across diverse physical mediums—ranging from high-speed fiber backbones to high-latency satellite uplinks and lossy cellular channels. Under the hood, **TCP (Transmission Control Protocol)** provides reliable, byte-stream delivery using:
+- **Three-way connection handshake** (`SYN` -> `SYN-ACK` -> `ACK`)
+- **Sliding congestion window management** (`CWND`, `ssthresh`, Slow Start, Congestion Avoidance)
+- **Loss recovery mechanisms** (Fast Retransmit via 3 Duplicate ACKs, Exponential RTO backoff timeouts)
+- **Graceful connection teardown** (`FIN` -> `ACK`)
+
+### The Challenge
+Standard network benchmarking tools often obscure what happens at the packet level. Students and network engineers frequently struggle to observe how TCP congestion windows collapse during packet drops, how latency inflates round-trip times (RTT), and how bandwidth throttling forces sender queue pacing.
+
+### The Solution: NetScope
+**NetScope** bridges the gap by providing a full-stack, diagnostic TCP platform:
+1. **Dynamic Session Pairing:** Seamless discovery and role assignment (`SEND` vs `RECEIVE`) using dynamic SVG QR codes and persistent session codes (`NS-XXXXXX`).
+2. **Deterministic Kernel-Level Impairments:** Precise injection of latency ($D$ ms), packet loss ($L$ %), and bandwidth rate limits ($R$ Mbps) via Linux `tc netem` egress qdiscs and cross-platform socket pacing.
+3. **High-Throughput Binary Wire Protocol:** 4-byte big-endian framed 64 KB streaming with real-time SHA-256 cryptographic verification.
+4. **Live Telemetry & Step-by-Step Visualization:** HTML5 Canvas TCP Ladder with slow-motion replay, scrubber controls, live kernel telemetry, and complete `.pcap` capture & protocol dissection via `tshark`.
+
+---
+
+## 2. Desktop Application Walkthrough (Real Screenshots)
+
+NetScope features a dark slate glassmorphism user interface designed for high-density network observation. Below is the step-by-step workflow captured directly from the live desktop interface.
+
+### Step 1: Session Discovery & Peer Pairing
+
+The desktop application initiates a session with a unique session ID (e.g., `NS-A62369`), starts the local TCP receiver/server, and displays an SVG QR code alongside a direct pairing link. A second peer scans the QR code or joins the URL to participate in the transfer.
+
+![Step 1: Session Discovery & QR Code](docs/screenshots/01_desktop_pair_devices.png)
+*Figure 1: Desktop Session Initialization with dynamic SVG QR code, session code `NS-A62369`, local network IP discovery, and real-time peer polling.*
+
+Once the remote client connects, NetScope deterministically pairs the two machines, assigns sender/receiver roles, and verifies connection readiness.
+
+![Step 1: Connected & Paired Peers](docs/screenshots/01_desktop_paired_peers.png)
+*Figure 2: Deterministic Peer Pairing — Device NS-A62369 connected as Receiver, waiting for paired sender to initiate transfer.*
+
+---
+
+### Step 2: Network Impairment Configuration
+
+NetScope provides fine-grained network impairment controls. Operators can test individual parameters or select one-click production presets (e.g., *Satellite Link*, *Lossy WAN*, *4G LTE Mobile*, *High Latency*, *Severe Impairment*).
+
+![Step 2: Network Impairment Presets](docs/screenshots/02_desktop_impairments.png)
+*Figure 3: Step 2 Impairment Configuration — Interactive sliders for Propagation Delay (0–1000 ms), Packet Loss (0–20%), and Rate Limiting (0.5–1000 Mbps).*
+
+---
+
+### Step 3: Live Observer & Telemetry Pipeline
+
+During data streaming, the Observer view streams live kernel telemetry and application-level metrics over high-frequency WebSockets (`/api/events`), displaying dynamic gauges and a live packet event ticker.
+
+![Step 3: Live Transfer Observer & Telemetry](docs/screenshots/03_desktop_observer.png)
+*Figure 4: Step 3 Live Observer — Real-time dials for Instant Throughput (Mbps), Kernel RTT (ms), Congestion Window CWND (segments), and Retransmission counters alongside a live packet batch log.*
+
+---
+
+### Step 4: Diagnostics Dashboard & Interactive TCP Ladder
+
+Upon completion, NetScope runs an automated protocol analysis on the resulting `.pcap` trace, validates SHA-256 integrity, presents high-level KPIs, and renders an **Interactive Full TCP Ladder & Timeline Replay**.
+
+![Step 4: Diagnostics Dashboard & Interactive TCP Ladder](docs/screenshots/04_desktop_results.png)
+*Figure 5: Step 4 Diagnostics Dashboard — SHA-256 verified badge, KPI summary cards, and the interactive HTML5 Canvas TCP Ladder with frame-by-frame replay, slow-motion speed controls (0.25x to 2x), dropped packet markers (X), RTO timeout badges, and orange retransmission lines.*
+
+---
+
+### API Reference: Swagger / OpenAPI Explorer
+
+FastAPI provides full interactive API documentation out of the box, allowing operators to trigger experiments and inspect active sessions headlessly.
+
+![API Documentation Swagger UI](docs/screenshots/07_api_docs_swagger.png)
+*Figure 6: Built-in Interactive OpenAPI / Swagger UI documentation at `http://localhost:8000/docs`.*
+
+---
+
+## 3. System Architecture & Data Plane
+
+NetScope separates the **Control Plane** (HTTP/WebSocket session discovery, pairing, and metrics collection) from the **Data Plane** (raw TCP binary streaming on dedicated ports).
+
+### Control Plane vs. Data Plane
+
+```mermaid
+flowchart TD
+    subgraph ControlPlane["Control & Monitoring Plane (HTTP / WebSocket :8000)"]
+        FastAPI["FastAPI Web Server"]
+        SessionMgr["Session Manager (NS-XXXXXX)"]
+        PairingMgr["Pairing Manager (Deterministic Pairs)"]
+        Broadcaster["Live Telemetry Broadcaster (WebSockets)"]
+        SnifferMgr["Sniffer & Capture Coordinator"]
+        
+        FastAPI --> SessionMgr
+        FastAPI --> PairingMgr
+        FastAPI --> Broadcaster
+        FastAPI --> SnifferMgr
+    end
+
+    subgraph DataPlane["Data Plane (Direct High-Speed TCP Channel :5000 / :5001)"]
+        Sender["TCP Sender (client/tcp_sender.py)"]
+        Receiver["TCP Receiver (client/tcp_receiver.py)"]
+        
+        Sender -- "4-Byte Length Prefix + 64 KB Binary Streaming" --> Receiver
+        Receiver -- "JSON Verification & SHA-256 Digest" --> Sender
+    end
+
+    subgraph Impairment["Kernel & Network Impairment Layer"]
+        TC["Linux Traffic Control (tc netem) / Userspace Pacing"]
+        Sender -. "Egress Queuing Discipline" .-> TC
+        TC -. "Delay / Loss / Bandwidth Throttle" .-> Receiver
+    end
+
+    subgraph Analysis["Packet Capture & Dissection Engine"]
+        TShark["tshark Packet Sniffer"]
+        PCAP["Capture Trace (.pcap)"]
+        Dissector["PCAP Analyzer (analysis/pcap_analyzer.py)"]
+        
+        TC --> TShark
+        TShark --> PCAP
+        PCAP --> Dissector
+        Dissector --> Broadcaster
+    end
+```
+
+### Two-Machine Network Architecture
+
+NetScope is engineered to operate across two physical Ubuntu machines over Ethernet/Wi-Fi or within a single machine using Linux Network Namespaces (`veth-c` <-> `veth-s`).
+
+```mermaid
+flowchart LR
+    subgraph Machine1["Machine 1: Sender / Client (10.10.0.1)"]
+        UI1["Desktop GUI"]
+        SenderApp["TCP Client (Sender)"]
+        VethC["Network Interface (veth-c / eth0)"]
+        Qdisc["Kernel Egress qdisc (tc netem)"]
+        Sniff["tshark Sniffer"]
+
+        UI1 --> SenderApp
+        SenderApp --> VethC
+        VethC --> Qdisc
+        VethC -. "Mirror" .-> Sniff
+    end
+
+    subgraph Network["Physical or Virtual Link"]
+        Wire["Controlled Network Path (Delay + Loss + Rate Limit)"]
+    end
+
+    subgraph Machine2["Machine 2: Receiver / Server (10.10.0.2)"]
+        VethS["Network Interface (veth-s / eth0)"]
+        ReceiverApp["TCP Server (Receiver)"]
+        Analyzer["PCAP Dissector & Metric Engine"]
+        Dashboard["Analysis Dashboard"]
+
+        VethS --> ReceiverApp
+        ReceiverApp --> Analyzer
+        Analyzer --> Dashboard
+    end
+
+    Qdisc --> Wire
+    Wire --> VethS
+```
+
+---
+
+## 4. Mermaid System & Protocol Diagrams
+
+### End-to-End System Workflow
+
+```mermaid
+flowchart TD
+    Start["Launch NetScope (./run.sh)"] --> Step1["Step 1: Session Discovery"]
+    Step1 --> QR["Generate QR Code / Link (NS-XXXXXX)"]
+    QR --> Pair["Pair Peer (Sender <-> Receiver)"]
+    Pair --> Step2["Step 2: Configure Impairments"]
+    Step2 --> ApplyTC["Apply tc netem / Socket Pacing"]
+    ApplyTC --> Step3["Step 3: Transfer & Observe"]
+    Step3 --> Capture["Start tshark Sniffer"]
+    Capture --> Stream["Stream 64 KB Binary Chunks"]
+    Stream --> Events{"TCP Events"}
+    Events -->|"Normal Chunk"| ChunkLog["Log In-Order DATA / ACK"]
+    Events -->|"Loss Injected"| LossLog["Log DROPPED Packet"]
+    LossLog --> Timeout["Wait RTO Timeout (120ms)"]
+    Timeout --> Retrans["Retransmit Segment #1"]
+    Retrans --> Recovered["Receiver Sends Recovery ACK"]
+    Recovered --> Stream
+    ChunkLog --> Stream
+    Stream --> Complete["Transfer Complete & Teardown (FIN/ACK)"]
+    Complete --> Step4["Step 4: Diagnostics & Ladder Replay"]
+    Step4 --> VerifySHA["Verify SHA-256 Digest"]
+    VerifySHA --> Dissect["Dissect PCAP (RTT, CWND, Retrans)"]
+    Dissect --> RenderLadder["Render Interactive TCP Ladder Canvas"]
+```
+
+### Session & Pairing State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> SESSION_INITIALIZED: Operator clicks Create Session
+    SESSION_INITIALIZED --> WAITING_FOR_PEER: QR & Join Link Generated
+    WAITING_FOR_PEER --> PEER_CONNECTED: Remote Client joins via URL/QR
+    PEER_CONNECTED --> ROLE_SELECTION: Select Send vs. Receive
+    ROLE_SELECTION --> DETERMINISTICALLY_PAIRED: Pair ID assigned (e.g. P-001)
+    DETERMINISTICALLY_PAIRED --> IMPAIRMENTS_ACTIVE: Delay / Loss / Rate configured
+    IMPAIRMENTS_ACTIVE --> TRANSFERRING: TCP socket handshake established
+    TRANSFERRING --> VERIFYING_INTEGRITY: Final chunk received
+    VERIFYING_INTEGRITY --> SESSION_COMPLETED: SHA-256 checksum confirmed
+    SESSION_COMPLETED --> [*]: Reset / Run Another
+```
+
+### TCP Handshake, Impairment Drop, RTO Timeout & Retransmission Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Sender (Client)
+    participant Qdisc as Impairment Engine (tc netem)
+    actor Server as Receiver (Server)
+
+    Note over Client,Server: 1. Connection Establishment (3-Way Handshake)
+    Client->>Server: TCP [SYN] Seq=0 Win=65535
+    Server->>Client: TCP [SYN, ACK] Seq=0 Ack=1 Win=65535
+    Client->>Server: TCP [ACK] Seq=1 Ack=1
+
+    Note over Client,Server: 2. In-Order Data Streaming
+    Client->>Server: TCP [DATA] Seq=1 Len=65536B
+    Server->>Client: TCP [ACK] Ack=65537
+    Client->>Server: TCP [DATA] Seq=65537 Len=65536B
+    Server->>Client: TCP [ACK] Ack=131073
+
+    Note over Client,Server: 3. Network Impairment (Packet Loss Injected)
+    Client-xQdisc: TCP [DATA] Seq=131073 Len=65536B [DROPPED IN TRANSIT]
+    Note over Client: RTO Timer starts running (e.g. 120ms)
+    Note over Client: RTO Timeout expired for Seq=131073!
+    
+    Note over Client,Server: 4. Retransmission & Recovery
+    Client->>Server: TCP [RETRANS #1] Seq=131073 Len=65536B
+    Server->>Client: TCP [ACK] Ack=196609 (Recovered)
+
+    Note over Client,Server: 5. Connection Teardown
+    Client->>Server: TCP [FIN, ACK] Seq=196609 Ack=1
+    Server->>Client: TCP [ACK] Ack=196610
+```
+
+---
+
+## 5. Network Impairment Engine
+
+### Linux Kernel `tc netem` vs. Cross-Platform Simulation
+
+NetScope supports two impairment execution modes:
+1. **Linux Kernel Mode (`tc netem`):** Utilizes Linux Traffic Control with Network Namespaces (`veth-c` / `veth-s`). Applies true kernel-level queuing disciplines on egress.
+2. **Cross-Platform / macOS Standalone Simulation:** When running on macOS Darwin or unprivileged Linux, NetScope emulates rate-limiting using high-precision chunk slicing and time-pacing (`time.perf_counter()`), coupled with probabilistic Bernoulli loss drops, exponential backoff RTO timers, and Reno congestion window tracking.
+
+#### Why Impair on Egress and Capture on the Sender?
+- **Delay Schedulers ($D$ ms):** `tc netem` operates exclusively on **egress** queues. In a one-way delay configuration of $D$ ms, the outgoing data packet is held for $D$ ms while the returning acknowledgment is unimpaired ($\approx RTT_0$). The measured Round Trip Time is:
+  $$\text{Expected } RTT \approx RTT_0 + D$$
+- **Retransmission Visibility:** Retransmissions originate at the sender when RTO timers expire or 3 duplicate ACKs are received. The receiver never observes lost packets—it only sees delays or holes. Therefore, Wireshark and `tshark` capture **must run on the sender** to record `tcp.analysis.retransmission`.
+
+### Benchmark Scenarios
+
+NetScope defines 11 standardized benchmark scenarios tested across file transfers:
+
+| Scenario | Injected Delay ($D$) | Packet Loss ($L$) | Bandwidth Limit ($R$) | Primary TCP Behavior |
+|:---|:---:|:---:|:---:|:---|
+| **Baseline** | 0 ms | 0% | Unlimited | Max wire throughput, zero retransmissions |
+| **Delay-1** | 50 ms | 0% | Unlimited | RTT inflates to ~52 ms; delayed ACK pacing |
+| **Delay-2** | 100 ms | 0% | Unlimited | RTT inflates to ~102 ms; throughput bounded by BDP |
+| **Delay-3** | 200 ms | 0% | Unlimited | High RTT; slow initial window expansion |
+| **Loss-1** | 0 ms | 1% | Unlimited | Occasional Fast Retransmit; CWND halved |
+| **Loss-2** | 0 ms | 2% | Unlimited | Frequent retransmissions; CWND oscillations |
+| **Loss-3** | 0 ms | 5% | Unlimited | Severe throughput degradation; multiple RTO timeouts |
+| **Bandwidth-1**| 0 ms | 0% | 10 Mbps | Sender paced at ~1.25 MB/s |
+| **Bandwidth-2**| 0 ms | 0% | 5 Mbps | Sender paced at ~625 KB/s |
+| **Bandwidth-3**| 0 ms | 0% | 1 Mbps | High transmission delay; queue buffering |
+| **Combined** | 100 ms | 2% | 5 Mbps | Compounded degradation (low throughput + high RTT + drops) |
+
+---
+
+## 6. Packet Dissection & Wireshark / tshark Pipeline
+
+NetScope automates live packet sniffing via `capture/sniffer.py` and trace extraction via `analysis/pcap_analyzer.py`.
+
+### Automated Capture
+When a transfer begins, `sniffer.py` executes:
+```bash
+tshark -i <interface> -f "tcp port 5000" -w results/pcaps/<run_id>.pcap
+```
+Upon transfer completion, a graceful `SIGINT` flushes all trailing packet trailers and saves the standard `.pcap` trace file.
+
+### Protocol Dissection
+`pcap_analyzer.py` invokes `tshark` field extraction to parse the trace without heavyweight external dependencies:
+```bash
+tshark -r <pcap_file> -T fields \
+  -e frame.number -e frame.time_relative -e ip.src -e ip.dst \
+  -e tcp.srcport -e tcp.dstport -e tcp.flags -e tcp.seq -e tcp.ack \
+  -e tcp.len -e tcp.analysis.retransmission -e tcp.analysis.duplicate_ack \
+  -e tcp.analysis.ack_rtt -e tcp.window_size
+```
+
+### Extracted Metrics
+- **Handshake Duration (`handshake_ms`):** Time elapsed between initial `SYN` and third `ACK`.
+- **Smoothed RTT (`rtt_avg_ms`, `rtt_min_ms`, `rtt_max_ms`):** Calculated from TCP ACK timestamps.
+- **Retransmissions:** Count of retransmitted segments matching `tcp.analysis.retransmission`.
+- **Integrity Validation:** SHA-256 match comparison between source file and received payload.
+
+---
+
+## 7. Quick Start & Setup Guide
+
+NetScope supports **macOS (Darwin)**, **Ubuntu/Debian**, **Fedora/RHEL**, **Arch Linux**, and **WSL2**.
 
 ### Prerequisites
 - Python 3.9 or higher
 - Node.js 18 or higher and npm
+- Optional: `wireshark` / `tshark` for live PCAP dissection
 
-### Automated One-Step Setup
+### 1. Automated One-Step Installation
 Run the portable setup script from the root directory:
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
 
-The script automatically:
-1. Detects your operating system and package manager.
-2. Validates Python and Node.js environments.
-3. Creates a Python virtual environment (`.venv`) and installs `requirements.txt`.
-4. Installs Desktop (`frontend/desktop`) and Mobile (`frontend/mobile`) dependencies via npm.
-5. Generates local test payload files (`tests/data/test_1mb.bin` and `tests/data/test_10mb.bin`).
-6. Configures Linux testbed namespaces or initializes macOS standalone loopback mode.
+What `setup.sh` does automatically:
+1. Detects OS and installs system tools (`iproute2`, `tshark`, `iperf3`).
+2. Configures a clean Python virtual environment (`.venv`) and installs `requirements.txt`.
+3. Installs Desktop UI (`frontend/desktop`) and Mobile UI (`frontend/mobile`) dependencies via npm.
+4. Generates deterministic binary test payloads (`1 MB`, `5 MB`, `10 MB`).
+5. Sets up Linux network namespaces (`ns-client`, `ns-server`) or activates standalone loopback mode.
 
-### Launching NetScope
-Start all services together:
+### 2. Launching NetScope
+Start the entire multi-process stack with a single command:
 ```bash
 ./run.sh
 ```
 
-Services started:
-- Desktop UI: http://localhost:5173
-- Mobile UI / Peer Join: http://localhost:5174
-- FastAPI Backend: http://localhost:8000
-- TCP Server: Port 5000 (Linux) / Port 5001 (macOS)
+#### Services Started:
+| Service | URL / Port | Purpose |
+|---|---|---|
+| **Desktop UI** | `http://localhost:5173` | Diagnostic dashboard, observer, and TCP ladder |
+| **Mobile Join UI** | `http://localhost:5174` | Mobile peer participation interface |
+| **FastAPI Backend** | `http://localhost:8000` | REST API, WebSockets, and session orchestration |
+| **TCP Data Port** | Port `5000` (Linux) / `5001` (macOS) | Direct high-speed framed binary data stream |
 
----
-
-## 4. Objectives
-
-1. Implement a TCP client-server file-transfer system.
-2. Establish communication between two Ubuntu machines.
-3. Provide GUI-based session creation and file-transfer controls.
-4. Generate a link/QR code for device discovery.
-5. Allow connected devices to select Send or Receive.
-6. Introduce controlled network delay.
-7. Introduce controlled packet loss.
-8. Introduce bandwidth limitations.
-9. Capture and analyse TCP traffic using Wireshark/tshark.
-10. Measure RTT, retransmissions, throughput, and file-transfer completion time.
-11. Compare TCP performance under different network conditions.
-12. Present results through a monitoring dashboard.
-
----
-
-## 5. CO Mapping
-
-### Primary CO: CO1
-
-Relevant topics:
-
-- Internet protocol stack
-- TCP/UDP sockets
-- Socket programming
-- Packet capture and analysis
-- Protocol-aware networking tools
-- Debugging network applications
-
----
-
-## 6. High-Level Architecture
-
-```mermaid
-flowchart TD
-    A["TCP File Transfer Application"] --> B["Session & Device Discovery"]
-    A --> C["TCP Communication"]
-    A --> D["File Transfer"]
-
-    E["Network Impairment Engine"] --> F["Delay"]
-    E --> G["Packet Loss"]
-    E --> H["Bandwidth Limiting"]
-
-    I["Packet Analysis"] --> J["Wireshark / tshark"]
-    I --> K["TCP Metrics"]
-
-    L["Monitoring Dashboard"] --> M["RTT"]
-    L --> N["Retransmissions"]
-    L --> O["Throughput"]
-    L --> P["Completion Time"]
-
-    C --> I
-    E --> C
-    K --> L
+### 3. Running Automated Tests
+Validate system integrity with the automated test suite:
+```bash
+.venv/bin/python -m unittest discover tests
 ```
 
 ---
 
-## 7. Two-Machine Architecture
+## 8. REST API & WebSocket Specifications
 
-```mermaid
-flowchart LR
-    subgraph D1["Ubuntu Machine 1"]
-        GUI1["GUI"]
-        CLIENT["TCP Client"]
-        GUI1 --> CLIENT
-    end
+### Session & Discovery Endpoints
+- `POST /api/session/create` — Initialize a new session and generate session code (`NS-XXXXXX`).
+- `GET /api/session/{session_id}` — Query active session state and connected peers.
+- `GET /api/qr/{session_id}` — Generate dynamic SVG QR code for mobile joining.
+- `POST /api/session/{session_id}/register` — Register a peer device with role (`SEND` or `RECEIVE`).
 
-    subgraph NET["Network"]
-        IMP["tc / netem"]
-    end
+### Impairment & Transfer Endpoints
+- `POST /api/impair` — Apply kernel or simulated network impairment parameters (`delay`, `loss`, `rate`).
+- `POST /api/transfer/start` — Initiate a file transfer run under configured parameters.
+- `GET /api/transfer/status` — Get live transfer percentage, throughput (Mbps), and state.
+- `GET /api/packets` — Query currently dissected packets for the active run.
+- `GET /api/results` — Retrieve historical transfer records and metrics from `results/transfers.jsonl`.
+- `GET /api/download/{run_id}` — Download the received binary file for integrity inspection.
 
-    subgraph D2["Ubuntu Machine 2"]
-        SERVER["TCP Server"]
-        GUI2["Analysis Dashboard"]
-        CAP["Wireshark / tshark"]
-        METRICS["Metrics Engine"]
-
-        SERVER --> CAP
-        CAP --> METRICS
-        METRICS --> GUI2
-    end
-
-    D1 --> IMP
-    IMP --> D2
-```
+### Real-Time WebSocket Channel
+- `WebSocket /api/events` — High-frequency duplex event stream broadcasting:
+  - `transfer_progress` — Current bytes, percentage, instant Mbps.
+  - `telemetry_update` — Kernel RTT, CWND window size, retransmission count.
+  - `packets_batch` — Dissected packet objects for the live ladder canvas.
+  - `packet_event` — Discrete events (`SYN`, `DROPPED`, `TIMEOUT`, `RETRANS`, `FIN`).
 
 ---
 
-## 8. QR / Link-Based Connection
+## 9. Academic & Viva Reference
 
-The QR code is used for discovery and session joining, not as the TCP transfer mechanism.
+### Course Outcome (CO1) Mapping
+- **Internet Protocol Stack:** Practical inspection of Layer 4 (TCP) transport mechanisms over Layer 3 (IP).
+- **Socket Programming:** Implementation of framed streaming, non-blocking polling, and socket options.
+- **Protocol Analysis:** Hands-on trace analysis using `tshark` filters and sequence number math.
+- **Debugging Distributed Applications:** Diagnosing timeout expirations, packet loss anomalies, and rate throttling.
 
-```mermaid
-sequenceDiagram
-    participant A as Device A
-    participant S as Server
-    participant B as Device B
+### Key Concepts for Viva / Technical Discussion
+1. **Why does throughput drop non-linearly with packet loss?**
+   Under TCP Reno/Cubic, any detected packet loss forces the Congestion Window (`CWND`) to halve (Multiplicative Decrease). When loss exceeds 2–5%, frequent RTO expirations force `CWND` back to 1 MSS, collapsing throughput.
+2. **Why does Bandwidth-Delay Product (BDP) matter?**
+   $$\text{BDP} = \text{Bandwidth} \times \text{RTT}$$
+   To maximize wire speed, the TCP socket buffer and window size must be at least equal to the BDP. If RTT is high (e.g. 200 ms) and window size is constrained, throughput is bottlenecked by window stalling.
+3. **Difference between Fast Retransmit and RTO Timeout:**
+   - **Fast Retransmit:** Triggered when the sender receives **3 Duplicate ACKs** for the same sequence number, signaling an isolated dropped packet while other packets continue arriving.
+   - **RTO Timeout:** Triggered when the retransmission timer expires without any incoming ACKs, signaling severe congestion or total link loss. The sender throttles `CWND` to 1 MSS and retransmits.
 
-    A->>S: Create Session
-    S->>A: Generate Link + QR
-    A->>B: Share QR / Link
-    B->>S: Join Session
-    S->>B: Session Accepted
-    B->>B: Select Send / Receive
-    B->>S: Establish TCP Connection
-    S-->>B: File Transfer
-```
+---
 
-Example connection information (Web Session API on Port 8000, TCP Data on Port 5000):
+### Project Work Distribution (3 Team Members)
 
 ```text
-http://192.168.1.20:8000/join/AB12CD
+├── Member 1: Application Architecture & Session Management
+│   └── TCP Sender/Receiver, Session Manager, QR/Link Discovery, Framing Protocol, Cryptographic Verification
+├── Member 2: Network Impairment & Linux Kernel Emulation
+│   └── Linux tc/netem qdisc scripts, Network Namespaces (veth), Delay/Loss/Rate profiling, Benchmark Runner
+└── Member 3: Packet Analysis, PCAP Dissection & UI Dashboard
+    └── tshark Capture Pipeline, PCAP Analyzer, HTML5 Canvas TCP Ladder, Real-time Charts, KPI Metrics
 ```
 
 ---
 
-## 9. File Transfer Workflow
-
-```mermaid
-flowchart TD
-    A["Start Application"] --> B["Create / Join Session"]
-    B --> C["Generate / Scan QR"]
-    C --> D["Establish TCP Connection"]
-    D --> E{"Select Operation"}
-
-    E -->|"Send"| F["Select File"]
-    E -->|"Receive"| G["Select Available File"]
-
-    F --> H["Transfer File"]
-    G --> H
-
-    H --> I["TCP ACK / Retransmission"]
-    I --> J["Transfer Complete"]
-    J --> K["Calculate Metrics"]
-    K --> L["Display Results"]
-```
-
----
-
-## 10. TCP Connection Analysis
-
-```text
-Client                         Server
-
-  |                              |
-  | -------- SYN --------------> |
-  | <------ SYN + ACK ---------- |
-  | -------- ACK --------------> |
-  |                              |
-  | -------- Request ----------> |
-  |                              |
-  | <------- File Data --------- |
-  | ----------- ACK -----------> |
-  |                              |
-  | <------- File Data --------- |
-  |                              |
-  | ----------- ACK -----------> |
-  |                              |
-```
-
----
-
-## 11. Network Impairments
-
-### Delay
-
-Example values:
-
-```text
-50 ms
-100 ms
-200 ms
-```
-
-### Packet Loss
-
-Example values:
-
-```text
-1%
-2%
-5%
-```
-
-### Bandwidth
-
-Example values:
-
-```text
-10 Mbps
-5 Mbps
-1 Mbps
-```
-
----
-
-## 12. Experimental Scenarios
-
-| Experiment | Delay | Loss | Bandwidth |
-|---|---:|---:|---:|
-| Baseline | 0 ms | 0% | Unlimited |
-| Delay-1 | 50 ms | 0% | Unlimited |
-| Delay-2 | 100 ms | 0% | Unlimited |
-| Delay-3 | 200 ms | 0% | Unlimited |
-| Loss-1 | 0 ms | 1% | Unlimited |
-| Loss-2 | 0 ms | 2% | Unlimited |
-| Loss-3 | 0 ms | 5% | Unlimited |
-| Bandwidth-1 | 0 ms | 0% | 10 Mbps |
-| Bandwidth-2 | 0 ms | 0% | 5 Mbps |
-| Bandwidth-3 | 0 ms | 0% | 1 Mbps |
-| Combined | 100 ms | 2% | 5 Mbps |
-
----
-
-## 13. Metrics
-
-The project measures:
-
-- TCP connection establishment time
-- RTT
-- TCP retransmissions
-- Duplicate ACKs
-- Throughput
-- File-transfer completion time
-- File integrity
-
----
-
-## 14. Wireshark & Packet Capture Analysis
-
-### Where to Impair and Where to Capture
-
-- **Where to Impair:** Impair on the **Client node egress** (`eth0` on Ubuntu Machine 1).
-- **Transfer Direction:** Use **Send mode** (Client uploads to Server).
-- **Where to Capture:** Capture on the **Client node** (`eth0`).
-
-#### Why Impair on Egress and Capture on the Sender?
-1. **One-Way Delay & Expected RTT:**
-   Linux `tc netem` applies delay to outgoing (egress) packets. For a one-way delay of $D$ ms and baseline round-trip time $RTT_0$, the forward packet experiences $\frac{RTT_0}{2} + D$, while the returning acknowledgment (ACK) is unimpaired ($\frac{RTT_0}{2}$). The measured RTT is:
-   $$\text{Expected } RTT \approx RTT_0 + D$$
-2. **Sender-Side Retransmission Visibility:**
-   TCP retransmissions originate at the sender when a retransmission timeout (RTO) expires or when 3 duplicate ACKs arrive. The receiving node never observes lost packets, it only sees delayed arrivals or out-of-order data. Therefore, Wireshark/tshark filter `tcp.analysis.retransmission` **must be captured on the sending node** to accurately count retransmitted segments.
-
-### Enabling Non-Root Packet Capture
-To allow `tshark` packet sniffing without running the whole python process as root:
-```bash
-sudo dpkg-reconfigure wireshark-common   # Select <Yes> when prompted
-sudo usermod -aG wireshark $USER
-```
-*Note: Log out and log back in for group permissions to take effect.*
-
-### Useful Wireshark Filters
-```text
-tcp
-tcp.port == 5000
-tcp.flags.syn == 1
-tcp.analysis.initial_rtt
-tcp.analysis.ack_rtt
-tcp.analysis.retransmission
-tcp.analysis.duplicate_ack
-tcp.analysis.out_of_order
-tcp.analysis.lost_segment
-```
-
----
-
-## 15. Dashboard
-
-The server/analysis machine should display:
-
-```text
-+------------------------------------------------------+
-|              TCP NETWORK ANALYZER                    |
-+------------------------------------------------------+
-| Connection                                           |
-| Client: 192.168.1.10                                 |
-| Server: 192.168.1.20                                 |
-| Status: CONNECTED                                    |
-+------------------------------------------------------+
-| Network Conditions                                   |
-| Delay:       100 ms                                  |
-| Packet Loss: 2 %                                     |
-| Bandwidth:   5 Mbps                                  |
-+------------------------------------------------------+
-| TCP Metrics                                          |
-| RTT:               108 ms                            |
-| Retransmissions:   17                               |
-| Duplicate ACKs:    24                               |
-| Throughput:        4.31 Mbps                         |
-+------------------------------------------------------+
-| File Transfer                                        |
-| File: testfile.bin                                   |
-| Size: 100 MB                                         |
-| Progress: █████████████████░░░ 85%                  |
-| Completion Time: 184.2 sec                          |
-+------------------------------------------------------+
-```
-
----
-
-## 16. Technology Stack
-
-### OS
-
-- Ubuntu Linux
-
-### Application
-
-- Python 3
-- TCP sockets
-- FastAPI or Flask
-- HTML/CSS/JavaScript
-- QR code generation
-
-### Networking
-
-- iproute2
-- tc
-- netem
-- iperf3
-- ss
-- tcpdump
-
-### Packet Analysis
-
-- Wireshark
-- tshark
-
-### Visualization
-
-- Matplotlib or Plotly
-
-### Development
-
-- Git
-- GitHub
-- VS Code
-
----
-
-## 17. Three-Person Work Distribution
-
-### Member 1: TCP Application & File Transfer
-
-Responsibilities:
-
-- TCP client
-- TCP server
-- Socket communication
-- File transfer
-- Send/Receive
-- Session management
-- QR/link generation
-- File integrity
-
-### Member 2: Network Impairment & Experimentation
-
-Responsibilities:
-
-- tc/netem
-- Delay injection
-- Packet-loss injection
-- Bandwidth limitation
-- Network configuration
-- Experiment automation
-- Test scenarios
-- Performance measurement
-
-### Member 3: Packet Analysis & Dashboard
-
-Responsibilities:
-
-- Wireshark
-- tshark
-- tcpdump
-- TCP packet analysis
-- Retransmission detection
-- RTT extraction
-- Metrics processing
-- Dashboard
-- Graphs
-- Visualization
-
-All members participate in integration, testing, documentation, presentation, and viva preparation.
-
----
-
-## 18. Repository Structure
-
-```text
-tcp-network-project/
-│
-├── README.md
-├── project.md
-├── requirements.txt
-│
-├── client/
-├── server/
-├── gui/
-├── qr/
-├── network/
-├── experiments/
-├── capture/
-├── analysis/
-├── visualization/
-├── results/
-├── docs/
-└── tests/
-```
-
----
-
-# 19. Milestones
-
-## Milestone 1: Environment Setup
-
-### 1. Package Installation (Both Machines)
-Run the following on Ubuntu Machine 1 (Client) and Ubuntu Machine 2 (Server/Analyzer):
-
-```bash
-sudo apt update && sudo apt install -y python3 iproute2 tcpdump tshark iperf3
-```
-
-### 2. Verify Connectivity
-Test basic IP reachability between Machine 1 and Machine 2:
-```bash
-ping -c 4 <SERVER_IP>
-```
-
-**Outcome:** Two machines communicate successfully.
-
----
-
-## Milestone 2: TCP Communication
-
-- Implemented in `server/tcp_server.py` and `client/tcp_client.py` using length-prefixed framing (`common/protocol.py`).
-- Data port: TCP **5000**.
-- Measures connection establishment time (SYN -> SYN-ACK -> ACK handshake).
-
-**Outcome:** Working multi-threaded TCP connection.
-
----
-
-## Milestone 3: File Transfer
-
-- Chunked binary streaming (64 KB chunks).
-- Full end-to-end SHA-256 integrity check.
-- Real-time ASCII progress bar and automatic JSONL performance logging to `results/transfers.jsonl`.
-
-### Exact Commands
-
-#### Start Server (Machine 2)
-```bash
-python3 server/tcp_server.py --host 0.0.0.0 --port 5000 --storage-dir server_storage
-```
-
-#### Run Client (Machine 1) - Send File
-```bash
-python3 client/tcp_client.py send --server <SERVER_IP> --port 5000 --file tests/data/test_10mb.bin --scenario Baseline
-```
-
-#### Run Client (Machine 1) - Receive File
-```bash
-python3 client/tcp_client.py receive --server <SERVER_IP> --port 5000 --file test_10mb.bin --scenario Baseline --dest-dir downloads
-```
-
-#### Run Controlled Impairment Experiment (Combined: 100ms delay, 2% loss, 5Mbps)
-```bash
-# 1. Apply impairment on the egress interface (e.g. eth0)
-sudo ./network/impair.sh eth0 apply --delay 100ms --loss 2% --rate 5mbit
-
-# 2. Verify active kernel qdisc
-./network/impair.sh eth0 show
-
-# 3. Perform transfer under impairment
-python3 client/tcp_client.py send --server <SERVER_IP> --port 5000 --file tests/data/test_10mb.bin --scenario Combined
-
-# 4. Clear impairment
-sudo ./network/impair.sh eth0 clear
-```
-
-**Outcome:** Reliable file transfer with verified integrity and metrics logging.
-
----
-
-## Milestone 4: GUI and QR Session
-
-- Create GUI
-- Create session
-- Generate session ID
-- Generate link
-- Generate QR
-- Scan/join session
-- Send/Receive selection
-
-**Outcome:** User-friendly file-transfer workflow.
-
----
-
-## Milestone 5: Packet Capture & Protocol Dissection
-
-Implemented in `capture/sniffer.py` and `analysis/pcap_analyzer.py`:
-- Captures live TCP streams via `tshark -i <iface> -f "tcp port 5000" -w <out.pcap>`.
-- Gracefully terminates with `SIGINT` to ensure all packet headers and footers flush.
-- Dissects packets without external Python frameworks using `tshark -r <file> -T fields`.
-- Extracts:
-  - 3-way handshake duration (`handshake_ms`)
-  - Initial RTT (`initial_rtt_ms`)
-  - Continuous ACK RTT (`rtt_min_ms`, `rtt_max_ms`, `rtt_avg_ms`)
-  - Retransmission counters (`retransmissions`, `fast_retransmissions`, `duplicate_acks`, `lost_segments`)
-  - TCP termination flags (`fin_seen`, `rst_seen`)
-- Merges application-level metrics with packet analysis into `results/transfers.jsonl`.
-
-### Commands
-
-#### Standalone Capture
-```bash
-python3 capture/sniffer.py --iface eth0 --port 5000 --out results/pcaps/test.pcap
-```
-
-#### Standalone PCAP Analysis
-```bash
-python3 analysis/pcap_analyzer.py results/pcaps/test.pcap --port 5000
-```
-
-#### Automated Benchmark with Live Packet Capture & Analysis
-```bash
-# Run 5 repeats per scenario with packet capture & dissection
-python3 experiments/run_all.py --server <SERVER_IP> --port 5000 --iface eth0 --file tests/data/test_10mb.bin --capture --repeats 5
-```
-
-#### Generate Statistical Summary Table & CSV
-```bash
-python3 experiments/summarize.py --input results/transfers.jsonl --output results/summary.csv
-```
-
-**Outcome:** Complete TCP packet capture, automated protocol dissection, and statistical summary reporting.
-
----
-
-## Milestone 6: Network Impairment
-
-Implement:
-
-- Delay
-- Packet loss
-- Bandwidth limitation
-
-**Outcome:** Controlled network conditions.
-
----
-
-## Milestone 7: Performance Measurement
-
-Measure:
-
-- RTT
-- Retransmissions
-- Duplicate ACKs
-- Throughput
-- Completion time
-
-**Outcome:** Experimental dataset.
-
----
-
-## Milestone 8: Dashboard
-
-Display:
-
-- Connection status
-- Network conditions
-- Transfer progress
-- RTT
-- Retransmissions
-- Throughput
-- Completion time
-- Packet events
-
-**Outcome:** Working monitoring dashboard.
-
----
-
-## Milestone 9: Experimental Evaluation
-
-Run:
-
-- Baseline
-- Delay
-- Loss
-- Bandwidth
-- Delay + Loss
-- Delay + Bandwidth
-- Combined impairment
-
-Repeat experiments to reduce measurement noise.
-
----
-
-## Milestone 10: Final Analysis
-
-Generate:
-
-- Delay vs RTT
-- Delay vs Completion Time
-- Loss vs Retransmissions
-- Loss vs Throughput
-- Bandwidth vs Throughput
-- Bandwidth vs Completion Time
-- Combined conditions vs overall performance
-
----
-
-## Milestone 11: Final Demonstration
-
-```mermaid
-flowchart LR
-    A["Create Session"] --> B["Generate QR"]
-    B --> C["Scan QR"]
-    C --> D["Join Session"]
-    D --> E["Send / Receive"]
-    E --> F["TCP File Transfer"]
-    F --> G["Network Impairment"]
-    G --> H["Wireshark"]
-    G --> I["Metrics"]
-    H --> J["Packet Analysis"]
-    I --> K["Dashboard"]
-    J --> K
-```
-
----
-
-# 20. Experimental Data Table
-
-| Experiment | Delay | Loss | Bandwidth | RTT | Retransmissions | Throughput | Completion Time |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Baseline | 0 ms | 0% | Unlimited | | | | |
-| Delay-1 | 50 ms | 0% | Unlimited | | | | |
-| Delay-2 | 100 ms | 0% | Unlimited | | | | |
-| Delay-3 | 200 ms | 0% | Unlimited | | | | |
-| Loss-1 | 0 ms | 1% | Unlimited | | | | |
-| Loss-2 | 0 ms | 2% | Unlimited | | | | |
-| Loss-3 | 0 ms | 5% | Unlimited | | | | |
-| Bandwidth-1 | 0 ms | 0% | 10 Mbps | | | | |
-| Bandwidth-2 | 0 ms | 0% | 5 Mbps | | | | |
-| Bandwidth-3 | 0 ms | 0% | 1 Mbps | | | | |
-| Combined | 100 ms | 2% | 5 Mbps | | | | |
-
----
-
-# 21. Success Criteria
-
-- [ ] Two Ubuntu machines communicate successfully.
-- [ ] TCP client/server works.
-- [ ] Files can be transferred reliably.
-- [ ] QR/link session joining works.
-- [ ] Send/Receive functionality works.
-- [ ] Wireshark captures TCP traffic.
-- [ ] TCP three-way handshake is identifiable.
-- [ ] Network delay can be controlled.
-- [ ] Packet loss can be controlled.
-- [ ] Bandwidth can be controlled.
-- [ ] TCP retransmissions can be observed.
-- [ ] RTT can be measured.
-- [ ] Throughput can be measured.
-- [ ] File-transfer completion time can be measured.
-- [ ] Dashboard displays metrics.
-- [ ] Experimental results are visualized.
-- [ ] Final analysis is documented.
-
----
-
-# 22. Final Project Outcome
-
-The final system combines:
-
-```text
-QR / Link Discovery
-        +
-GUI File Transfer
-        +
-TCP Socket Programming
-        +
-Network Impairment
-        +
-Wireshark Packet Analysis
-        +
-Performance Metrics
-        +
-Visualization
-```
-
-The central experimental question is:
-
-> **How do delay, packet loss, and bandwidth limitations affect TCP reliability, retransmissions, throughput, and file-transfer completion time?**
-
----
-
-# 23. Final Project Statement
-
-> **TCP Reliability and Performance under Network Impairments** is a three-member networking project that implements a TCP-based file-transfer system between Ubuntu devices with QR/link-based session discovery and a monitoring interface. The system introduces controlled delay, packet loss, and bandwidth limitations using Linux networking tools and captures the resulting TCP traffic using Wireshark/tshark. TCP connection establishment, retransmissions, RTT, throughput, and file-transfer completion time are measured and compared across controlled network conditions. The project combines practical TCP socket programming, network emulation, packet analysis, and performance visualization to experimentally evaluate TCP reliability and performance under impaired network conditions.
+*Developed for Advanced Computer Networks & Distributed Systems Laboratory.*

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { RefreshCw, Trash2, Smartphone, Monitor, CheckCircle, Wifi } from 'lucide-react';
+import { RefreshCw, Trash2, Smartphone, Monitor, CheckCircle, Wifi, ArrowRight } from 'lucide-react';
 
 /**
  * Step 1: Pair Component (Task 4)
@@ -21,41 +21,53 @@ export default function Pair({ onAdvance, ws, session, setSession }) {
   const [peers, setPeers] = useState([]);
   const [loading, setLoading] = useState(!session);
 
-  // Initialize session on mount if not already present
+  // Sync peers from session and poll periodically for state updates
   useEffect(() => {
     let isMounted = true;
-    if (session?.session_id) {
-      if (session.clients) {
-        setPeers(Object.values(session.clients));
-      }
-      return;
+    if (!session?.session_id) return;
+
+    if (session.clients) {
+      setPeers(Object.values(session.clients));
     }
 
-    async function createSession() {
+    async function refreshSession() {
       try {
-        setLoading(true);
-        const res = await fetch('/api/session', { method: 'POST' });
-        if (!res.ok) throw new Error('Failed to create session');
-        const data = await res.json();
-        if (isMounted) {
-          setSession(data);
-          if (data.clients) {
-            setPeers(Object.values(data.clients));
+        const res = await fetch(`/api/session/${session.session_id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted) {
+            if (data.clients) {
+              setPeers(Object.values(data.clients));
+            }
+            // Auto-advance if server marks sender as ready
+            if (data.sender_ready) {
+              console.log('[Pair] Server reports sender_ready: true, auto-advancing...');
+              if (setSession) {
+                setSession((prev) => ({
+                  ...prev,
+                  sender_ready: true,
+                  sender_filename: data.sender_filename || prev?.sender_filename,
+                  payload_size: data.payload_size || prev?.payload_size,
+                }));
+              }
+              onAdvance();
+            }
           }
         }
       } catch (err) {
-        console.error(err);
-      } finally {
-        if (isMounted) setLoading(false);
+        console.warn('[Pair] Session refresh error:', err);
       }
     }
 
-    createSession();
+    refreshSession();
+    // 2-second background poll to catch any client signal if WebSocket event is missed
+    const pollInterval = setInterval(refreshSession, 2000);
 
     return () => {
       isMounted = false;
+      clearInterval(pollInterval);
     };
-  }, [session, setSession]);
+  }, [session?.session_id, onAdvance]);
 
   // Listen to WebSocket events on the passed `ws` prop
   useEffect(() => {
@@ -89,6 +101,14 @@ export default function Pair({ onAdvance, ws, session, setSession }) {
         // sender_ready: auto-advance
         if (type === 'sender_ready') {
           console.log('[Pair] Received sender_ready, advancing...');
+          if (setSession) {
+            setSession((prev) => ({
+              ...prev,
+              sender_ready: true,
+              sender_filename: data.filename || prev?.sender_filename,
+              payload_size: data.payload_size || prev?.payload_size,
+            }));
+          }
           onAdvance();
         }
       } catch (e) {
@@ -128,14 +148,14 @@ export default function Pair({ onAdvance, ws, session, setSession }) {
     waitingText = 'Waiting for devices to connect...';
   } else if (peers.length === 1) {
     if (senderPeer && !receiverPeer) {
-      waitingText = 'Sender connected, waiting for receiver...';
+      waitingText = 'Sender connected. Send signal from mobile or proceed directly.';
     } else if (receiverPeer && !senderPeer) {
-      waitingText = 'Receiver connected, waiting for sender...';
+      waitingText = 'Receiver connected and ready.';
     } else {
-      waitingText = 'Device connected, waiting for peer...';
+      waitingText = 'Device connected and ready.';
     }
   } else if (peers.length >= 2) {
-    waitingText = 'Both connected, waiting for sender signal...';
+    waitingText = 'Devices connected. Waiting for sender signal...';
   }
 
   return (
@@ -174,7 +194,7 @@ export default function Pair({ onAdvance, ws, session, setSession }) {
         </div>
 
         {/* Connected Peers Table & Status */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between space-y-6">
+        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between space-y-5">
           <div>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-slate-200">Connected Peers</h3>
@@ -238,11 +258,38 @@ export default function Pair({ onAdvance, ws, session, setSession }) {
             </div>
           </div>
 
+          {/* Sender Ready Notification Banner */}
+          {session?.sender_ready && (
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs flex items-center justify-between">
+              <span className="font-semibold flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-400" />
+                Sender Ready ({session?.payload_size || '1 MB'})
+              </span>
+              <button
+                onClick={onAdvance}
+                className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                Proceed <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* Animated Waiting Status */}
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 flex items-center gap-3">
-            <RefreshCw className="w-5 h-5 text-cyan-400 animate-spin shrink-0" />
+          <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800/80 flex items-center gap-3">
+            <RefreshCw className="w-4 h-4 text-cyan-400 animate-spin shrink-0" />
             <span className="text-xs font-medium text-cyan-300">{waitingText}</span>
           </div>
+
+          {/* Manual Proceed Button when at least 1 device is connected */}
+          {peers.length >= 1 && (
+            <button
+              onClick={onAdvance}
+              className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold rounded-xl shadow-lg shadow-cyan-500/20 text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <span>Proceed to Impairments</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </div>

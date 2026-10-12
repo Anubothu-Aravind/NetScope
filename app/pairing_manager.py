@@ -61,7 +61,7 @@ class PairingManager:
                     paired_client_ids.add(p.receiver_id)
 
             for c in session.clients.values():
-                if not c.online or c.client_id in paired_client_ids:
+                if not session_manager.is_client_active(c) or c.client_id in paired_client_ids:
                     continue
                 if c.role == ClientRole.SEND:
                     senders.append(c)
@@ -167,6 +167,21 @@ class PairingManager:
                         partner.status = ClientStatus.WAITING
                     if session.active_pair and session.active_pair.pair_id == pair.pair_id:
                         session.active_pair = None
+
+    def reset_session_pairs(self, session_id: str):
+        """Reset or transition active pairs in session to completed so fresh pairing or re-run can occur."""
+        with self._lock:
+            session = session_manager.get_session(session_id)
+            if session:
+                session.active_pair = None
+            for p in self.pairs.values():
+                if p.session_id == session_id and p.status in (
+                    PairStatus.PAIRED,
+                    PairStatus.TCP_CONNECTING,
+                    PairStatus.TRANSFERRING
+                ):
+                    p.status = PairStatus.COMPLETED
+                    p.updated_at = datetime.now(timezone.utc).isoformat()
 
 
 # Global singleton instance

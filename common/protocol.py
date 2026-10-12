@@ -340,7 +340,10 @@ def send_file_stream(sock, file_path: str, file_size: int,
             progress_cb(sent_total, actual_size)
 
         if stats_cb:
-            stats_cb({
+            sample_step = max(total_chunks // 100, 1)
+            is_sample_chunk = (chunk_idx % sample_step == 0) or (chunk_idx == total_chunks) or (retry_count > 0)
+
+            chunk_stats = {
                 "pct": round((sent_total / actual_size) * 100.0, 1),
                 "bytes": sent_total,
                 "total_bytes": actual_size,
@@ -350,7 +353,14 @@ def send_file_stream(sock, file_path: str, file_size: int,
                 "retransmissions": retransmissions,
                 "retry": retry_count,
                 "state": "Sending packets",
-            })
+            }
+            if is_sample_chunk:
+                chunk_stats["event"] = "data_chunk"
+                chunk_stats["seq"] = seq_num
+                chunk_stats["len"] = chunk_len
+                chunk_stats["chunk"] = chunk_idx
+
+            stats_cb(chunk_stats)
 
     return hasher.hexdigest()
 

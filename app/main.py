@@ -399,6 +399,7 @@ class TransferRequest(BaseModel):
     scenario: Optional[str] = "Manual"
     pair_id: Optional[str] = None
     session_id: Optional[str] = None
+    payload_size: Optional[str] = None
 
 class JoinRequest(BaseModel):
     role: str = "send"  # send or receive
@@ -470,8 +471,9 @@ def get_session_available_roles(session_id: str):
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    has_sender = any(c.role == ClientRole.SEND for c in sess.clients.values() if c.online)
-    has_receiver = any(c.role == ClientRole.RECEIVE for c in sess.clients.values() if c.online)
+    session_manager.cleanup_stale_clients(session_id)
+    has_sender = any(c.role == ClientRole.SEND for c in sess.clients.values() if session_manager.is_client_active(c))
+    has_receiver = any(c.role == ClientRole.RECEIVE for c in sess.clients.values() if session_manager.is_client_active(c))
 
     available = []
     if not has_sender:
@@ -484,45 +486,84 @@ def get_session_available_roles(session_id: str):
 
 @app.post("/api/session/{session_id}/clients")
 async def register_session_client(session_id: str, req: ClientJoinRequest, request: Request):
-    """Register device with the control plane in this session."""
+    """Register or reconnect a device with the control plane in this session."""
     sess = session_manager.get_session(session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
     client_ip = request.client.host if request.client else "127.0.0.1"
-    # Check X-Forwarded-For if present
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         client_ip = forwarded.split(",")[0].strip()
 
-    req_role = (req.role or "unset").lower()
-    has_sender = any(c.role == ClientRole.SEND for c in sess.clients.values() if c.online)
-    has_receiver = any(c.role == ClientRole.RECEIVE for c in sess.clients.values() if c.online)
+    session_manager.cleanup_stale_clients(session_id)
 
-    # Enforce that only one sender and one receiver can exist. Reject with 400 if requested role is already taken.
+    # 1. Existing client reconnection by client_id
+    if req.client_id and req.client_id in sess.clients:
+        client = session_manager.register_client(
+            session_id=session_id,
+            client_name=req.client_name,
+            ip=client_ip,
+            role_str=req.role or "unset",
+            client_id=req.client_id
+        )
+        pair = pairing_manager.attempt_pairing(session_id)
+        await broadcaster.broadcast("CLIENT_JOINED", {
+            "session_id": session_id,
+            "client": client.model_dump()
+        })
+        if pair:
+            await broadcaster.broadcast("PAIR_CREATED", {
+                "session_id": session_id,
+                "pair": pair.model_dump()
+            })
+        res_data = client.model_dump()
+        res_data.update({
+            "status": "ok",
+            "client": client.model_dump(),
+            "client_id": client.client_id,
+            "role": client.role.value if hasattr(client.role, "value") else str(client.role),
+            "paired": pair is not None,
+            "pair": pair.model_dump() if pair else None
+        })
+        return res_data
+
+    # 2. Check active clients holding the roles
+    req_role = (req.role or "unset").lower()
+    active_sender = next((c for c in sess.clients.values() if c.role == ClientRole.SEND and session_manager.is_client_active(c)), None)
+    active_receiver = next((c for c in sess.clients.values() if c.role == ClientRole.RECEIVE and session_manager.is_client_active(c)), None)
+
+    sender_taken = active_sender is not None
+    receiver_taken = active_receiver is not None
+
     if req_role in ("send", "sender"):
-        if has_sender:
+        if sender_taken:
             raise HTTPException(status_code=400, detail="Sender role is already taken in this session")
         resolved_role = "send"
     elif req_role in ("receive", "receiver"):
-        if has_receiver:
+        if receiver_taken:
             raise HTTPException(status_code=400, detail="Receiver role is already taken in this session")
         resolved_role = "receive"
     elif req_role == "auto":
-        if not has_sender:
+        if not sender_taken:
             resolved_role = "send"
-        elif not has_receiver:
+        elif not receiver_taken:
             resolved_role = "receive"
         else:
             raise HTTPException(status_code=400, detail="Session is full. Both sender and receiver roles are taken.")
     else:
-        # unset or other role
-        if has_sender and has_receiver:
+        if sender_taken and receiver_taken:
             raise HTTPException(status_code=400, detail="Session is full. Both sender and receiver roles are taken.")
         resolved_role = req_role
 
     try:
-        client = session_manager.register_client(session_id, req.client_name, client_ip, resolved_role)
+        client = session_manager.register_client(
+            session_id=session_id,
+            client_name=req.client_name,
+            ip=client_ip,
+            role_str=resolved_role,
+            client_id=req.client_id
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -549,6 +590,32 @@ async def register_session_client(session_id: str, req: ClientJoinRequest, reque
         "pair": pair.model_dump() if pair else None
     })
     return res_data
+
+
+@app.post("/api/session/{session_id}/reset")
+async def reset_session_endpoint(session_id: str):
+    """Reset session state to allow repeated transfers and notify all connected peers."""
+    sess = session_manager.reset_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    pairing_manager.reset_session_pairs(session_id)
+
+    global CURRENT_TRANSFER
+    CURRENT_TRANSFER["running"] = False
+
+    await broadcaster.broadcast("SESSION_RESET", {
+        "session_id": session_id,
+        "action": "reset",
+        "timestamp": time.time()
+    })
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "action": "reset",
+        "clients": [c.model_dump() for c in sess.clients.values()]
+    }
 
 
 @app.get("/api/session/{session_id}/clients")
@@ -872,6 +939,47 @@ async def upload_session_file(session_id: str, file: UploadFile = File(...)):
     }
 
 
+def ensure_sample_payload(size_str: str) -> str:
+    """Deterministically generate local sample test payloads in tests/data/ if not existing."""
+    size_map = {
+        "1MB": 1 * 1024 * 1024,      # 1 MiB = 1,048,576 bytes
+        "10MB": 10 * 1024 * 1024,    # 10 MiB = 10,485,760 bytes
+        "50MB": 50 * 1024 * 1024,    # 50 MiB = 52,428,800 bytes
+    }
+    norm = size_str.upper().replace(" ", "")
+    byte_count = size_map.get(norm, 1 * 1024 * 1024)
+    data_dir = os.path.join(PROJECT_ROOT, "tests", "data")
+    os.makedirs(data_dir, exist_ok=True)
+
+    candidates = [
+        os.path.join(data_dir, f"test_{norm.lower()}.bin"),
+        os.path.join(data_dir, f"sample_{norm.lower()}.bin")
+    ]
+    for cand in candidates:
+        if os.path.isfile(cand) and os.path.getsize(cand) == byte_count:
+            return cand
+
+    file_path = candidates[0]
+    pattern = b"NetScope Deterministic TCP Payload Pattern 64B " * 128  # 8192 bytes
+    with open(file_path, "wb") as f:
+        written = 0
+        while written < byte_count:
+            to_write = min(len(pattern), byte_count - written)
+            f.write(pattern[:to_write])
+            written += to_write
+    return file_path
+
+
+@app.get("/api/payloads")
+def list_sample_payloads():
+    """Return available deterministic test payload sizes."""
+    return [
+        {"id": "1MB", "label": "1 MB", "desc": "Small payload", "bytes": 1048576, "size_mb": 1.0},
+        {"id": "10MB", "label": "10 MB", "desc": "Medium payload", "bytes": 10485760, "size_mb": 10.0},
+        {"id": "50MB", "label": "50 MB", "desc": "Large payload", "bytes": 52428800, "size_mb": 50.0},
+    ]
+
+
 @app.get("/api/scenarios")
 def get_scenarios():
     """Load and return the 11 specification scenarios from network/scenarios.json."""
@@ -895,7 +1003,7 @@ async def trigger_transfer(req: TransferRequest, background_tasks: BackgroundTas
 
     ensure_server_running()
 
-    # Strictly resolve target file path from session upload or explicit request parameter
+    # Strictly resolve target file path from sample payload, session upload, or explicit request parameter
     target_file = None
     target_session = None
 
@@ -909,7 +1017,12 @@ async def trigger_transfer(req: TransferRequest, background_tasks: BackgroundTas
     if not target_session and session_manager.sessions:
         target_session = list(session_manager.sessions.values())[-1]
 
-    if target_session and target_session.uploaded_file and os.path.isfile(target_session.uploaded_file):
+    req_payload = getattr(req, "payload_size", None)
+    if req_payload:
+        target_file = ensure_sample_payload(req_payload)
+    elif target_session and getattr(target_session, "payload_size", None):
+        target_file = ensure_sample_payload(target_session.payload_size)
+    elif target_session and target_session.uploaded_file and os.path.isfile(target_session.uploaded_file):
         target_file = target_session.uploaded_file
     elif target_session and getattr(target_session, "sender_file_path", None) and os.path.isfile(target_session.sender_file_path):
         target_file = target_session.sender_file_path
@@ -919,10 +1032,8 @@ async def trigger_transfer(req: TransferRequest, background_tasks: BackgroundTas
             target_file = cand
 
     if not target_file:
-        raise HTTPException(
-            status_code=400,
-            detail="No source file uploaded or specified for transfer. Please have sender upload a file."
-        )
+        # Fallback to deterministic 1MB payload
+        target_file = ensure_sample_payload("1MB")
 
     file_path = target_file
 
@@ -1248,9 +1359,50 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                     await broadcaster.broadcast("packets_batch", {"packets": new_batch, "count": len(CURRENT_PACKETS)})
                     await broadcaster.broadcast("packet_event", {"flag": "RETRANS", "info": f"Retransmission #{retry_n} sent", "time": time.time()})
                     last_retrans = cur_retrans
+                    last_bytes = max(last_bytes, cur_bytes, seq_val + len_val - 1)
 
-                elif ev not in ("pacing", "timer_tick"):
-                    # 4. Standard in-order data transfer
+                elif ev == "data_chunk":
+                    # 4. Standard in-order data chunk
+                    seq_val = prog.get("seq", last_bytes + 1)
+                    chunk_len = prog.get("len", 65536)
+                    p_num = len(CURRENT_PACKETS) + 1
+                    data_p = {
+                        "num": p_num,
+                        "time": rel_t,
+                        "src": client_ip if mode == "send" else server_ip,
+                        "dst": server_ip if mode == "send" else client_ip,
+                        "src_port": client_port if mode == "send" else tcp_port,
+                        "dst_port": tcp_port if mode == "send" else client_port,
+                        "direction": "c2s" if mode == "send" else "s2c",
+                        "flags": "DATA",
+                        "seq": seq_val,
+                        "ack": 1,
+                        "len": chunk_len,
+                        "is_retrans": False,
+                        "info": f"TCP [DATA] Seq={seq_val} Len={chunk_len}B"
+                    }
+                    ack_p = {
+                        "num": p_num + 1,
+                        "time": round(rel_t + max(cur_rtt / 1000.0, 0.001), 4),
+                        "src": server_ip if mode == "send" else client_ip,
+                        "dst": client_ip if mode == "send" else server_ip,
+                        "src_port": tcp_port if mode == "send" else client_port,
+                        "dst_port": client_port if mode == "send" else tcp_port,
+                        "direction": "s2c" if mode == "send" else "c2s",
+                        "flags": "ACK",
+                        "seq": 1,
+                        "ack": seq_val + chunk_len,
+                        "len": 0,
+                        "is_retrans": False,
+                        "info": f"TCP [ACK] Ack={seq_val + chunk_len}"
+                    }
+                    new_batch = [data_p, ack_p]
+                    CURRENT_PACKETS.extend(new_batch)
+                    await broadcaster.broadcast("packets_batch", {"packets": new_batch, "count": len(CURRENT_PACKETS)})
+                    last_bytes = max(last_bytes, cur_bytes, seq_val + chunk_len - 1)
+
+                elif (mode == "receive" or cur_bytes >= CURRENT_TRANSFER.get("total_bytes", 1)) and ev not in ("pacing", "timer_tick"):
+                    # 5. Fallback in-order data transfer (tail bytes or receive mode progress)
                     delta_bytes = cur_bytes - last_bytes
                     if delta_bytes > 0:
                         chunk_len = delta_bytes
@@ -1288,7 +1440,7 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                         new_batch = [data_p, ack_p]
                         CURRENT_PACKETS.extend(new_batch)
                         await broadcaster.broadcast("packets_batch", {"packets": new_batch, "count": len(CURRENT_PACKETS)})
-                        last_bytes = cur_bytes
+                        last_bytes = max(last_bytes, cur_bytes)
 
             except json.JSONDecodeError:
                 pass
@@ -1387,6 +1539,15 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
             "packets": CURRENT_PACKETS
         })
 
+        # Transition active pairs in session to COMPLETED
+        for sess in session_manager.sessions.values():
+            if sess.active_pair and sess.active_pair.status in (
+                PairStatus.PAIRED,
+                PairStatus.TCP_CONNECTING,
+                PairStatus.TRANSFERRING
+            ):
+                pairing_manager.update_pair_status(sess.active_pair.pair_id, PairStatus.COMPLETED)
+
     except Exception as e:
         print(f"[ERROR] Transfer execution error: {e}")
         try:
@@ -1409,14 +1570,31 @@ def get_telemetry():
 
 @app.post("/api/session/{session_id}/signal/ready")
 async def signal_sender_ready(session_id: str, payload: Optional[Dict[str, Any]] = None):
-    """Signal that sender is ready to transfer."""
-    filename = (payload or {}).get("filename", "")
+    """Signal that sender is ready to transfer with optional deterministic sample payload."""
+    data = payload or {}
+    filename = data.get("filename", "")
+    payload_size = data.get("payload_size")
+
+    session = session_manager.get_session(session_id)
+    if session:
+        session.sender_ready = True
+        if payload_size:
+            session.payload_size = payload_size
+            sample_file = ensure_sample_payload(payload_size)
+            session.sender_file_path = sample_file
+            session.uploaded_file = sample_file
+            if not filename:
+                filename = os.path.basename(sample_file)
+        if filename:
+            session.sender_filename = filename
+
     await broadcaster.broadcast("sender_ready", {
         "session_id": session_id,
         "ready": True,
-        "filename": filename
+        "filename": filename,
+        "payload_size": payload_size
     })
-    return {"status": "ok", "ready": True, "filename": filename}
+    return {"status": "ok", "ready": True, "filename": filename, "payload_size": payload_size}
 
 
 @app.websocket("/api/ws")
@@ -1424,6 +1602,7 @@ async def signal_sender_ready(session_id: str, payload: Optional[Dict[str, Any]]
 async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = None):
     await websocket.accept()
     await broadcaster.register_ws(websocket)
+    attached_client_id: Optional[str] = None
     try:
         while True:
             text = await websocket.receive_text()
@@ -1431,14 +1610,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: Optional[str] = N
                 continue
             try:
                 msg = json.loads(text)
-                if msg.get("type") == "PING":
+                msg_type = (msg.get("type") or "").upper()
+                sid = msg.get("session_id") or session_id
+                cid = msg.get("client_id")
+                if cid:
+                    attached_client_id = cid
+
+                if msg_type in ("PING", "HEARTBEAT"):
+                    if sid and (cid or attached_client_id):
+                        session_manager.update_heartbeat(sid, cid or attached_client_id)
                     await websocket.send_text(json.dumps({"type": "PONG", "time": time.time()}))
+                elif msg_type == "IDENTIFY":
+                    if sid and cid:
+                        session_manager.update_heartbeat(sid, cid)
+                        await websocket.send_text(json.dumps({"type": "IDENTIFIED", "client_id": cid}))
             except Exception:
                 pass
     except WebSocketDisconnect:
         broadcaster.unregister_ws(websocket)
+        if session_id and attached_client_id:
+            session_manager.update_heartbeat(session_id, attached_client_id)
     except Exception:
         broadcaster.unregister_ws(websocket)
+        if session_id and attached_client_id:
+            session_manager.update_heartbeat(session_id, attached_client_id)
 
 
 @app.get("/api/events")

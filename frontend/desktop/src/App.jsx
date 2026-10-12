@@ -73,11 +73,23 @@ export default function App() {
         const type = (msg.type || msg.event || '').toLowerCase();
         const data = msg.data || msg;
 
-        // Reset arrays on new transfer
-        if (type === 'transfer_started') {
+        // Reset arrays on new transfer or session reset
+        if (type === 'transfer_started' || type === 'session_reset') {
           setCapturedPackets([]);
           setTelemetryHistory([]);
           setFinalData(null);
+        }
+
+        // Sender ready event with payload info -> immediately advance to Step 2 (Impairments)
+        if (type === 'sender_ready') {
+          console.log('[App WS] sender_ready received, transitioning to step 2:', data);
+          setSession((prev) => ({
+            ...prev,
+            sender_ready: true,
+            sender_filename: data.filename || prev?.sender_filename,
+            payload_size: data.payload_size || prev?.payload_size,
+          }));
+          setCurrentStep(2);
         }
 
         // Packets batch
@@ -134,7 +146,14 @@ export default function App() {
     { num: 4, label: 'Results' },
   ];
 
-  const handleReset = () => {
+  const handleReset = async () => {
+    try {
+      if (session?.session_id) {
+        await fetch(`/api/session/${session.session_id}/reset`, { method: 'POST' });
+      }
+    } catch (e) {
+      console.warn('Failed to notify server of session reset:', e);
+    }
     setCapturedPackets([]);
     setTelemetryHistory([]);
     setFinalData(null);

@@ -74,11 +74,16 @@ class SessionInfo(BaseModel):
     active_pair: Optional[PairInfo] = None
     uploaded_file: Optional[str] = None  # Absolute path to the sender-uploaded file for this session
     sender_file_path: Optional[str] = None
+    payload_size: Optional[str] = None
+    sender_filename: Optional[str] = None
+    sender_ready: bool = False
 
 
 class ClientJoinRequest(BaseModel):
     client_name: str
     role: Optional[str] = "unset"  # send, receive, or unset
+    client_id: Optional[str] = None
+    reconnect: Optional[bool] = False
 
 
 class RoleSelectRequest(BaseModel):
@@ -98,6 +103,7 @@ class TransferRequest(BaseModel):
     scenario: Optional[str] = "Manual"
     pair_id: Optional[str] = None
     session_id: Optional[str] = None
+    payload_size: Optional[str] = None
 
 
 class TransferProgressReport(BaseModel):
