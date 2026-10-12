@@ -1100,15 +1100,18 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                 last_time = now
 
                 pct = float(prog.get("pct", 0.0))
+                state_msg = prog.get("state", "Sending packets")
                 CURRENT_TRANSFER["pct"] = pct
                 CURRENT_TRANSFER["bytes"] = cur_bytes
                 CURRENT_TRANSFER["mbps"] = instant_mbps
+                CURRENT_TRANSFER["state"] = state_msg
 
                 await broadcaster.broadcast("transfer_progress", {
                     "run_id": run_id,
                     "pct": pct,
                     "bytes": cur_bytes,
-                    "mbps": instant_mbps
+                    "mbps": instant_mbps,
+                    "state": state_msg
                 })
 
                 # Kernel or protocol stats
@@ -1133,27 +1136,30 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                 if cur_cwnd <= 0:
                     cur_cwnd = 32
 
-                # Emit live telemetry_update every ~150ms or on completion
-                if (now - last_telemetry_time) >= 0.15 or cur_bytes >= CURRENT_TRANSFER.get("total_bytes", 1):
+                # Emit live telemetry_update every ~100ms or on completion
+                if (now - last_telemetry_time) >= 0.10 or cur_bytes >= CURRENT_TRANSFER.get("total_bytes", 1):
                     last_telemetry_time = now
                     telemetry_data = {
                         "throughput": instant_mbps,
                         "rtt": cur_rtt,
                         "cwnd": cur_cwnd,
                         "retransmissions": cur_retrans,
-                        "pct": pct
+                        "pct": pct,
+                        "state": state_msg
                     }
                     await broadcaster.broadcast("telemetry_update", telemetry_data)
 
-                # Real-time incremental packet flow for live TCP ladder
-                delta_bytes = cur_bytes - last_bytes
-                is_retrans = (cur_retrans > last_retrans) or (prog.get("event") == "retransmission")
-                if delta_bytes > 0 or is_retrans:
-                    chunk_len = max(delta_bytes, 65536) if not is_retrans else 65536
+                # Process Discrete TCP Events (Packet Loss, Timeout, Retransmission, Normal Data)
+                ev = prog.get("event")
+                rel_t = round(now - t_start, 4)
+
+                if ev == "packet_loss":
+                    # 1. Packet dropped in flight
+                    seq_val = prog.get("seq", last_bytes + 1)
+                    len_val = prog.get("len", 65536)
+                    retry_n = prog.get("retry", 1)
                     p_num = len(CURRENT_PACKETS) + 1
-                    rel_t = round(now - t_start, 4)
-                    flag_label = "DATA [RETRANS]" if is_retrans else "DATA"
-                    data_p = {
+                    drop_p = {
                         "num": p_num,
                         "time": rel_t,
                         "src": client_ip if mode == "send" else server_ip,
@@ -1161,34 +1167,128 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                         "src_port": client_port if mode == "send" else tcp_port,
                         "dst_port": tcp_port if mode == "send" else client_port,
                         "direction": "c2s" if mode == "send" else "s2c",
-                        "flags": flag_label,
-                        "seq": last_bytes + 1,
+                        "flags": "DATA [DROPPED]",
+                        "seq": seq_val,
                         "ack": 1,
-                        "len": chunk_len,
-                        "is_retrans": is_retrans,
-                        "info": f"TCP [{flag_label}] Seq={last_bytes + 1} Len={chunk_len}B"
+                        "len": len_val,
+                        "is_dropped": True,
+                        "retry": retry_n,
+                        "info": f"TCP [DATA] Seq={seq_val} Len={len_val}B [DROPPED in transit]"
+                    }
+                    CURRENT_PACKETS.append(drop_p)
+                    await broadcaster.broadcast("packets_batch", {"packets": [drop_p], "count": len(CURRENT_PACKETS)})
+                    await broadcaster.broadcast("packet_event", {"flag": "DROPPED", "info": f"Packet dropped in transit (Seq={seq_val})", "time": time.time()})
+
+                elif ev == "timeout":
+                    # 2. RTO timer expired event
+                    seq_val = prog.get("seq", last_bytes + 1)
+                    rto_ms = prog.get("rto_ms", 200)
+                    retry_n = prog.get("retry", 1)
+                    p_num = len(CURRENT_PACKETS) + 1
+                    timeout_p = {
+                        "num": p_num,
+                        "time": rel_t,
+                        "src": client_ip if mode == "send" else server_ip,
+                        "dst": client_ip if mode == "send" else server_ip,
+                        "src_port": client_port if mode == "send" else tcp_port,
+                        "dst_port": client_port if mode == "send" else tcp_port,
+                        "direction": "timer",
+                        "flags": "RTO TIMEOUT",
+                        "seq": seq_val,
+                        "ack": 0,
+                        "len": 0,
+                        "is_timeout": True,
+                        "rto_ms": rto_ms,
+                        "retry": retry_n,
+                        "info": f"RTO Timeout ({rto_ms}ms) expired for Seq={seq_val}. Retrying #{retry_n}"
+                    }
+                    CURRENT_PACKETS.append(timeout_p)
+                    await broadcaster.broadcast("packets_batch", {"packets": [timeout_p], "count": len(CURRENT_PACKETS)})
+                    await broadcaster.broadcast("packet_event", {"flag": "TIMEOUT", "info": f"RTO Timeout expired ({rto_ms}ms)", "time": time.time()})
+
+                elif ev == "retransmission":
+                    # 3. Retransmitted segment + recovery ACK
+                    seq_val = prog.get("seq", last_bytes + 1)
+                    len_val = prog.get("len", 65536)
+                    retry_n = prog.get("retry", 1)
+                    p_num = len(CURRENT_PACKETS) + 1
+                    retrans_p = {
+                        "num": p_num,
+                        "time": rel_t,
+                        "src": client_ip if mode == "send" else server_ip,
+                        "dst": server_ip if mode == "send" else client_ip,
+                        "src_port": client_port if mode == "send" else tcp_port,
+                        "dst_port": tcp_port if mode == "send" else client_port,
+                        "direction": "c2s" if mode == "send" else "s2c",
+                        "flags": f"DATA [RETRANS #{retry_n}]",
+                        "seq": seq_val,
+                        "ack": 1,
+                        "len": len_val,
+                        "is_retrans": True,
+                        "retry": retry_n,
+                        "info": f"TCP [RETRANS #{retry_n}] Seq={seq_val} Len={len_val}B"
                     }
                     ack_p = {
                         "num": p_num + 1,
-                        "time": round(rel_t + max(cur_rtt / 1000.0, 0.001), 4),
+                        "time": round(rel_t + max(cur_rtt / 1000.0, 0.002), 4),
                         "src": server_ip if mode == "send" else client_ip,
                         "dst": client_ip if mode == "send" else server_ip,
                         "src_port": tcp_port if mode == "send" else client_port,
                         "dst_port": client_port if mode == "send" else tcp_port,
                         "direction": "s2c" if mode == "send" else "c2s",
-                        "flags": "ACK [DUP ACK]" if is_retrans else "ACK",
+                        "flags": "ACK",
                         "seq": 1,
-                        "ack": cur_bytes + 1,
+                        "ack": seq_val + len_val,
                         "len": 0,
-                        "is_dup_ack": is_retrans,
-                        "info": f"TCP [{'DUP ACK' if is_retrans else 'ACK'}] Ack={cur_bytes + 1}"
+                        "is_retrans": False,
+                        "info": f"TCP [ACK] Ack={seq_val + len_val} (Recovered)"
                     }
-                    new_batch = [data_p, ack_p]
+                    new_batch = [retrans_p, ack_p]
                     CURRENT_PACKETS.extend(new_batch)
                     await broadcaster.broadcast("packets_batch", {"packets": new_batch, "count": len(CURRENT_PACKETS)})
-
-                    last_bytes = cur_bytes
+                    await broadcaster.broadcast("packet_event", {"flag": "RETRANS", "info": f"Retransmission #{retry_n} sent", "time": time.time()})
                     last_retrans = cur_retrans
+
+                elif ev not in ("pacing", "timer_tick"):
+                    # 4. Standard in-order data transfer
+                    delta_bytes = cur_bytes - last_bytes
+                    if delta_bytes > 0:
+                        chunk_len = delta_bytes
+                        p_num = len(CURRENT_PACKETS) + 1
+                        data_p = {
+                            "num": p_num,
+                            "time": rel_t,
+                            "src": client_ip if mode == "send" else server_ip,
+                            "dst": server_ip if mode == "send" else client_ip,
+                            "src_port": client_port if mode == "send" else tcp_port,
+                            "dst_port": tcp_port if mode == "send" else client_port,
+                            "direction": "c2s" if mode == "send" else "s2c",
+                            "flags": "DATA",
+                            "seq": last_bytes + 1,
+                            "ack": 1,
+                            "len": chunk_len,
+                            "is_retrans": False,
+                            "info": f"TCP [DATA] Seq={last_bytes + 1} Len={chunk_len}B"
+                        }
+                        ack_p = {
+                            "num": p_num + 1,
+                            "time": round(rel_t + max(cur_rtt / 1000.0, 0.001), 4),
+                            "src": server_ip if mode == "send" else client_ip,
+                            "dst": client_ip if mode == "send" else server_ip,
+                            "src_port": tcp_port if mode == "send" else client_port,
+                            "dst_port": client_port if mode == "send" else tcp_port,
+                            "direction": "s2c" if mode == "send" else "c2s",
+                            "flags": "ACK",
+                            "seq": 1,
+                            "ack": cur_bytes + 1,
+                            "len": 0,
+                            "is_retrans": False,
+                            "info": f"TCP [ACK] Ack={cur_bytes + 1}"
+                        }
+                        new_batch = [data_p, ack_p]
+                        CURRENT_PACKETS.extend(new_batch)
+                        await broadcaster.broadcast("packets_batch", {"packets": new_batch, "count": len(CURRENT_PACKETS)})
+                        last_bytes = cur_bytes
 
             except json.JSONDecodeError:
                 pass
@@ -1212,7 +1312,7 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                 "seq": last_bytes + 1,
                 "ack": 1,
                 "len": 0,
-                "info": f"TCP {client_port} → {tcp_port} [FIN, ACK] Seq={last_bytes + 1} Ack=1"
+                "info": f"TCP {client_port} -> {tcp_port} [FIN, ACK] Seq={last_bytes + 1} Ack=1"
             },
             {
                 "num": fin_num + 1,
@@ -1226,7 +1326,7 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
                 "seq": 1,
                 "ack": last_bytes + 2,
                 "len": 0,
-                "info": f"TCP {tcp_port} → {client_port} [ACK] Ack={last_bytes + 2}"
+                "info": f"TCP {tcp_port} -> {client_port} [ACK] Ack={last_bytes + 2}"
             }
         ]
         CURRENT_PACKETS.extend(teardown_pkts)
@@ -1236,7 +1336,11 @@ async def execute_transfer_worker(mode: str, file_path: str, scenario: str, run_
         # Final PCAP analysis & record update
         tcp_metrics = analyze(pcap_file, port=tcp_port)
         pcap_pkts = extract_pcap_packets(pcap_file, port=tcp_port, limit=2000)
-        if pcap_pkts and len(pcap_pkts) > len(CURRENT_PACKETS):
+
+        # Preserve simulation retransmissions and dropped events if pcap doesn't have them
+        sim_has_events = any(p.get("is_retrans") or p.get("is_dropped") or p.get("is_timeout") for p in CURRENT_PACKETS)
+        pcap_has_retrans = any(p.get("is_retrans") for p in pcap_pkts)
+        if pcap_pkts and (pcap_has_retrans or not sim_has_events):
             CURRENT_PACKETS = pcap_pkts
 
         if tcp_metrics.get("rtt_avg_ms") is None or tcp_metrics.get("rtt_avg_ms") == 0.0:

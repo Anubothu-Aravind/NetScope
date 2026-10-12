@@ -23,9 +23,9 @@ CLIENT A (Sender) <==== Direct TCP Data Channel ====> CLIENT B (Receiver)
 ```
 
 ### Team Work Distribution (3 Members)
-1. **Member 1 — Application & Session:**
+1. **Member 1: Application & Session:**
    - TCP client/server, Session management, QR/link generation, Client registration, Send/Receive, Pairing, File transfer, File integrity.
-2. **Member 2 — Networking & Experiments:**
+2. **Member 2: Networking & Experiments:**
    - tc/netem, Delay, Packet loss, Bandwidth, Network namespaces, Experiment runner, Scenario definitions, Repeated experiments.
-3. **Member 3 — Packet Analysis & Dashboard:**
+3. **Member 3: Packet Analysis & Dashboard:**
    - tshark, Wireshark, PCAP analysis, RTT, Retransmissions, Metrics, Dashboard, Charts, Visualization.

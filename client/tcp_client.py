@@ -59,21 +59,32 @@ def print_progress(current: int, total: int, prefix: str = "Transferring"):
 
 
 class JsonProgressTracker:
-    """Emits throttled JSON telemetry lines (~200 ms) for frontend/backend streaming."""
+    """Emits throttled JSON telemetry lines (~100 ms) and immediate discrete TCP events for live frontend streaming."""
     def __init__(self, total_bytes: int):
         self.total_bytes = total_bytes
         self.start_time = time.perf_counter()
         self.last_emit_time = 0.0
-        self.interval = 0.20  # 200 ms
-        self.last_stats = {}
+        self.interval = 0.10  # 100 ms for responsive live movement
+        self.last_stats = {
+            "retransmissions": 0,
+            "cwnd": 32,
+            "rtt": 2.0,
+            "state": "Sending packets",
+        }
 
     def emit_stats(self, stats: dict):
         now = time.perf_counter()
-        self.last_stats.update(stats)
+        # Save persistent metrics
+        for k in ("retransmissions", "cwnd", "rtt", "mbps", "bytes", "pct", "state", "retry"):
+            if k in stats:
+                self.last_stats[k] = stats[k]
+
+        is_event = bool(stats.get("event"))
         is_complete = (stats.get("bytes", 0) >= self.total_bytes)
-        is_event = (stats.get("event") is not None)
-        if is_complete or is_event or (now - self.last_emit_time >= self.interval):
-            sys.stdout.write(json.dumps(self.last_stats) + "\n")
+
+        if is_event or is_complete or (now - self.last_emit_time >= self.interval):
+            payload = {**self.last_stats, **stats}
+            sys.stdout.write(json.dumps(payload) + "\n")
             sys.stdout.flush()
             self.last_emit_time = now
 
@@ -90,6 +101,8 @@ class JsonProgressTracker:
                 "mbps": round(mbps, 2),
                 **self.last_stats
             }
+            # Remove transient event from routine progress ticks
+            data.pop("event", None)
             sys.stdout.write(json.dumps(data) + "\n")
             sys.stdout.flush()
             self.last_emit_time = now

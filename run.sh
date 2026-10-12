@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh — Start NetScope: Backend, Desktop (5173), Mobile (5174), and TCP Server
+# run.sh: Start NetScope: Backend, Desktop (5173), Mobile (5174), and TCP Server
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"

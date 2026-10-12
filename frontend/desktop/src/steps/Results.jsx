@@ -187,17 +187,25 @@ export default function Results({
                     </td>
                   </tr>
                 ) : (
-                  allPackets.map((pkt, idx) => (
-                    <tr
-                      key={pkt.num || idx}
-                      className={
-                        pkt.is_retrans
-                          ? 'bg-rose-500/10 text-rose-300'
-                          : pkt.flags?.includes('SYN')
-                          ? 'bg-emerald-500/10 text-emerald-300'
-                          : 'hover:bg-slate-800/30 text-slate-300'
-                      }
-                    >
+                  allPackets.map((pkt, idx) => {
+                    const isRet = pkt.is_retrans || pkt.flags?.includes('RETRANS');
+                    const isDrop = pkt.is_dropped || pkt.flags?.includes('DROPPED');
+                    const isTimeout = pkt.is_timeout || pkt.flags?.includes('TIMEOUT');
+                    return (
+                      <tr
+                        key={pkt.num || idx}
+                        className={
+                          isDrop
+                            ? 'bg-rose-500/15 text-rose-300'
+                            : isTimeout
+                            ? 'bg-amber-500/15 text-amber-300'
+                            : isRet
+                            ? 'bg-orange-500/15 text-orange-300'
+                            : pkt.flags?.includes('SYN')
+                            ? 'bg-emerald-500/10 text-emerald-300'
+                            : 'hover:bg-slate-800/30 text-slate-300'
+                        }
+                      >
                       <td className="px-3 py-1.5 text-slate-500">{pkt.num || idx + 1}</td>
                       <td className="px-3 py-1.5">{typeof pkt.time === 'number' ? pkt.time.toFixed(3) : pkt.time}</td>
                       <td className="px-3 py-1.5 font-bold">{pkt.flags || 'TCP'}</td>
@@ -207,8 +215,9 @@ export default function Results({
                         {pkt.info}
                       </td>
                     </tr>
-                  ))
-                )}
+                  );
+                })
+              )}
               </tbody>
             </table>
           </div>

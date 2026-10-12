@@ -145,7 +145,8 @@ def send_file_stream(sock, file_path: str, file_size: int,
                      stats_cb: Optional[Callable[[Dict[str, Any]], None]] = None) -> str:
     """
     Stream a file as raw bytes over the socket in 64 KB chunks.
-    Accurately emulates bandwidth limiting, delay, and packet loss if configured.
+    Accurately emulates bandwidth limiting, delay, packet loss, RTO timers,
+    and retransmissions with fine-grained pacing to keep UI responsive.
     Computes and returns the SHA-256 checksum of the transmitted data.
     """
     hasher = hashlib.sha256()
@@ -170,9 +171,29 @@ def send_file_stream(sock, file_path: str, file_size: int,
     retransmissions = 0
     total_chunks = max((actual_size + CHUNK_SIZE - 1) // CHUNK_SIZE, 1)
 
-    # Initial connection propagation delay simulation
+    # Base RTT and CWND models
+    base_rtt = max(delay_ms * 2.0, 1.0) if delay_ms > 0 else 2.5
+    current_cwnd = 32
+    ssthresh = 64
+    MAX_RETRIES = 5
+
+    # Initial connection propagation delay simulation (sliced to keep heartbeat responsive)
     if delay_ms > 0:
-        time.sleep(delay_ms / 1000.0)
+        rem_init_delay = (delay_ms / 1000.0)
+        while rem_init_delay > 0:
+            step = min(rem_init_delay, 0.05)
+            time.sleep(step)
+            rem_init_delay -= step
+            if stats_cb:
+                stats_cb({
+                    "state": "Establishing connection (propagation delay)",
+                    "pct": 0.0,
+                    "bytes": 0,
+                    "total_bytes": actual_size,
+                    "rtt": round(base_rtt, 2),
+                    "cwnd": current_cwnd,
+                    "retransmissions": retransmissions,
+                })
 
     t_start = time.perf_counter()
     chunk_idx = 0
@@ -183,34 +204,126 @@ def send_file_stream(sock, file_path: str, file_size: int,
             break
 
         chunk_idx += 1
+        chunk_len = len(chunk)
+        seq_num = sent_total + 1
         t_chunk_start = time.perf_counter()
 
-        # 1. Packet Loss & Retransmission emulation
-        if loss_pct > 0 and random.random() < (loss_pct / 100.0):
+        # 1. Packet Loss & Retransmission emulation with RTO timers and retry counts
+        retry_count = 0
+        while loss_pct > 0 and random.random() < (loss_pct / 100.0):
+            retry_count += 1
             retransmissions += 1
-            # RTO backoff delay before resending chunk
-            rto_delay = max(0.12, (delay_ms * 2.0) / 1000.0)
-            time.sleep(rto_delay)
+
+            # Congestion window shrinks on loss / timeout event
+            ssthresh = max(current_cwnd // 2, 4)
+            current_cwnd = max(current_cwnd // 2, 4)
+
+            # Calculate RTO timer (with exponential backoff for repeated timeouts)
+            rto_delay = max(0.12, (base_rtt * 1.5 + 40.0) / 1000.0) * (2 ** min(retry_count - 1, 3))
+
+            # A. Emit Packet Loss event (packet dropped in transit)
             if stats_cb:
                 stats_cb({
-                    "event": "retransmission",
-                    "retransmissions": retransmissions,
+                    "event": "packet_loss",
+                    "seq": seq_num,
+                    "len": chunk_len,
                     "chunk": chunk_idx,
+                    "retry": retry_count,
+                    "retransmissions": retransmissions,
+                    "rto_ms": round(rto_delay * 1000.0, 1),
+                    "state": f"Packet dropped in transit (Seq={seq_num}). RTO timer active.",
+                    "bytes": sent_total,
+                    "total_bytes": actual_size,
+                    "cwnd": current_cwnd,
+                    "rtt": round(base_rtt + random.uniform(1.0, 4.0), 2),
                 })
 
+            # B. Wait for RTO timer to expire in responsive non-blocking slices
+            rem_rto = rto_delay
+            while rem_rto > 0:
+                step = min(rem_rto, 0.05)
+                time.sleep(step)
+                rem_rto -= step
+                if stats_cb:
+                    stats_cb({
+                        "event": "timer_tick",
+                        "seq": seq_num,
+                        "retry": retry_count,
+                        "retransmissions": retransmissions,
+                        "state": f"RTO timer running ({round(rem_rto * 1000.0)}ms remaining)",
+                        "bytes": sent_total,
+                        "total_bytes": actual_size,
+                    })
+
+            # C. Timeout expired -> Trigger retransmission event
+            if stats_cb:
+                stats_cb({
+                    "event": "timeout",
+                    "seq": seq_num,
+                    "len": chunk_len,
+                    "chunk": chunk_idx,
+                    "retry": retry_count,
+                    "retransmissions": retransmissions,
+                    "rto_ms": round(rto_delay * 1000.0, 1),
+                    "state": f"RTO Timeout ({round(rto_delay * 1000.0, 1)}ms) expired. Retrying #{retry_count}.",
+                    "bytes": sent_total,
+                    "total_bytes": actual_size,
+                    "cwnd": current_cwnd,
+                })
+                # Immediately emit retransmission segment event
+                stats_cb({
+                    "event": "retransmission",
+                    "seq": seq_num,
+                    "len": chunk_len,
+                    "chunk": chunk_idx,
+                    "retry": retry_count,
+                    "retransmissions": retransmissions,
+                    "state": f"Retrying transmission #{retry_count} for Seq={seq_num}",
+                    "bytes": sent_total,
+                    "total_bytes": actual_size,
+                    "cwnd": current_cwnd,
+                })
+
+            if retry_count >= MAX_RETRIES:
+                # Limit retries to prevent infinite loops under extreme drop rates
+                break
+
+        # Transmit the data bytes over TCP socket
         hasher.update(chunk)
         sock.sendall(chunk)
-        sent_total += len(chunk)
+        sent_total += chunk_len
 
-        # 2. Bandwidth rate-limiting (pacing)
+        # Window recovery / growth on successful transmission
+        if current_cwnd < ssthresh:
+            current_cwnd = min(current_cwnd + 2, 128)
+        else:
+            current_cwnd = min(current_cwnd + 1, 128)
+
+        # 2. Bandwidth rate-limiting (pacing) with responsive sliced heartbeat ticks
         if rate_bps > 0:
-            target_chunk_time = (len(chunk) * 8.0) / rate_bps
+            target_chunk_time = (chunk_len * 8.0) / rate_bps
             chunk_elapsed = time.perf_counter() - t_chunk_start
             sleep_needed = target_chunk_time - chunk_elapsed
-            if sleep_needed > 0:
-                time.sleep(sleep_needed)
+            while sleep_needed > 0:
+                step = min(sleep_needed, 0.05)
+                time.sleep(step)
+                sleep_needed -= step
+                # Keep UI active with smooth partial movement even during high rate limiting
+                partial_pct = round(((sent_total - chunk_len * max(sleep_needed / target_chunk_time, 0.0)) / actual_size) * 100.0, 1)
+                if stats_cb:
+                    stats_cb({
+                        "event": "pacing",
+                        "pct": min(max(partial_pct, 0.1), 99.9),
+                        "bytes": sent_total,
+                        "total_bytes": actual_size,
+                        "mbps": round(rate_bps / 1_000_000.0, 2),
+                        "state": f"Pacing bandwidth at {round(rate_bps / 1_000_000.0, 2)} Mbps",
+                        "rtt": round(base_rtt, 2),
+                        "cwnd": current_cwnd,
+                        "retransmissions": retransmissions,
+                    })
 
-        # 3. Micro-delay per chunk if delay requested
+        # 3. Propagation micro-delay per chunk if configured
         if delay_ms > 0 and total_chunks > 1:
             per_chunk_delay = (delay_ms / 1000.0) / total_chunks
             time.sleep(per_chunk_delay)
@@ -220,9 +333,8 @@ def send_file_stream(sock, file_path: str, file_size: int,
         if rate_bps > 0:
             instant_mbps = min(instant_mbps, round(rate_bps / 1_000_000.0, 2))
 
-        # Measured/simulated RTT & CWND
-        current_rtt = round(delay_ms + 12.0 + (random.uniform(-1.5, 2.5) if delay_ms > 0 else random.uniform(0.5, 3.0)), 2)
-        cwnd_segs = max(10, min(120, int(30 + (sent_total / actual_size) * 50 - retransmissions * 8)))
+        # Measured/simulated RTT
+        current_rtt = round(base_rtt + (random.uniform(-1.0, 2.0) if delay_ms > 0 else random.uniform(0.2, 1.5)), 2)
 
         if progress_cb:
             progress_cb(sent_total, actual_size)
@@ -234,8 +346,10 @@ def send_file_stream(sock, file_path: str, file_size: int,
                 "total_bytes": actual_size,
                 "mbps": instant_mbps,
                 "rtt": max(current_rtt, 1.0),
-                "cwnd": max(cwnd_segs, 4),
+                "cwnd": max(current_cwnd, 4),
                 "retransmissions": retransmissions,
+                "retry": retry_count,
+                "state": "Sending packets",
             })
 
     return hasher.hexdigest()

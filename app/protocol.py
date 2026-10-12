@@ -1,5 +1,5 @@
 """
-app/protocol.py — Re-exports common/protocol.py for backward compatibility.
+app/protocol.py: Re-exports common/protocol.py for backward compatibility.
 
 The canonical implementation lives in common/protocol.py.
 This shim exists so any code that does `from app.protocol import ...`

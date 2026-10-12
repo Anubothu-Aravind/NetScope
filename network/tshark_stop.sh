@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# network/tshark_stop.sh — Send SIGINT to a tshark process (by PID).
+# network/tshark_stop.sh: Send SIGINT to a tshark process (by PID).
 #
 # Usage: tshark_stop.sh <PID>
 #

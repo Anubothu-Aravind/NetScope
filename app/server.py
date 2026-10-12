@@ -1,5 +1,5 @@
 """
-app/server.py — Re-exports the FastAPI application from app/main.py.
+app/server.py: Re-exports the FastAPI application from app/main.py.
 
 The canonical server implementation is in app/main.py.
 This shim exists so the spec-required path app/server.py resolves,

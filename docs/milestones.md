@@ -4,7 +4,7 @@ This document tracks the milestone roadmap and deliverables for **NetScope: TCP 
 
 ---
 
-## Milestone 1 — Codebase Audit & Cleanup
+## Milestone 1: Codebase Audit & Cleanup
 **Deliverables:**
 - Repository audit & structure mapping.
 - Identification of working functionality (FastAPI, tshark sniffer, PCAP analyzer, tc netem scripts, network namespaces, SVG QR).
@@ -20,7 +20,7 @@ No unnecessary duplicate implementation exists.
 
 ---
 
-## Milestone 2 — Session & QR System
+## Milestone 2: Session & QR System
 **Deliverables:**
 - Unique session generation with `NS-` prefix (e.g. `NS-AB12CD`).
 - REST endpoints: `POST /api/session`, `GET /api/session/{id}`.
@@ -39,7 +39,7 @@ Client joins the correct session.
 
 ---
 
-## Milestone 3 — Client Registration
+## Milestone 3: Client Registration
 **Deliverables:**
 - Client model with `client_id`, `client_name`, `ip`, `role`, `status`, and `online`.
 - REST endpoints: `POST /api/session/{id}/clients` (join), `GET /api/session/{id}/clients` (list), `DELETE /api/session/{id}/clients/{cid}` (leave).
@@ -54,7 +54,7 @@ Server sees every connected client.
 
 ---
 
-## Milestone 4 — Client Pairing
+## Milestone 4: Client Pairing
 **Deliverables:**
 - Deterministic pairing engine in `app/pairing_manager.py`.
 - Roles: `SEND` vs `RECEIVE`.
@@ -75,7 +75,7 @@ A <---- Pair P-001 ----> B
 
 ---
 
-## Milestone 5 — Client-to-Client TCP Transfer
+## Milestone 5: Client-to-Client TCP Transfer
 **Deliverables:**
 - Client data plane: `client/tcp_sender.py` and `client/tcp_receiver.py`.
 - Framing: 4-byte big-endian payload length headers.
@@ -94,7 +94,7 @@ Server sees transfer progress.
 
 ---
 
-## Milestone 6 — Live Server Monitoring
+## Milestone 6: Live Server Monitoring
 **Deliverables:**
 - Server receives progress telemetry from sender/receiver.
 - SSE broadcaster (`/api/events`) streams live state, throughput, and progress.
@@ -108,7 +108,7 @@ The entire client-to-client workflow can be observed from the server.
 
 ---
 
-## Milestone 7 — Network Impairment Engine
+## Milestone 7: Network Impairment Engine
 **Deliverables:**
 - Linux Traffic Control (`tc netem`) interface wrapper (`network/impair.sh`).
 - Preset scenarios loaded dynamically from `network/scenarios.json`.
@@ -123,7 +123,7 @@ Baseline, Delay, Loss, Bandwidth, Combined experiments can be executed reproduci
 
 ---
 
-## Milestone 8 — Packet Capture & TCP Analysis
+## Milestone 8: Packet Capture & TCP Analysis
 **Deliverables:**
 - Passive sniffer (`capture/sniffer.py`) capturing on `veth-c` inside `ns-client` with SIGINT flushing.
 - Automated PCAP dissector (`analysis/pcap_analyzer.py`) extracting handshake latency, RTT min/max/avg, retransmissions, duplicate ACKs, lost segments, and FIN/RST flags.
@@ -136,7 +136,7 @@ A completed transfer produces a usable PCAP and parsed TCP metrics.
 
 ---
 
-## Milestone 9 — Experiment Automation
+## Milestone 9: Experiment Automation
 **Deliverables:**
 - Automated benchmark runner (`experiments/run_all.py`).
 - Supports `--scenarios` filter (comma-separated names) and `--repeats`.
@@ -150,7 +150,7 @@ Experiments can be reproduced without manually performing every step.
 
 ---
 
-## Milestone 10 — Dashboard & Visualization
+## Milestone 10: Dashboard & Visualization
 **Deliverables:**
 - ConSentinel design system GUI (`gui/index.html`) using `--u` unit scaling.
 - Six required comparative metric charts driven by `results/transfers.jsonl`:
@@ -169,7 +169,7 @@ All visualizations use real recorded data.
 
 ---
 
-## Milestone 11 — Integration Testing
+## Milestone 11: Integration Testing
 **Deliverables:**
 - End-to-end integration tests:
   - `tests/test_remote_access.py`: Non-loopback client security restrictions.
@@ -181,7 +181,7 @@ All visualizations use real recorded data.
 
 ---
 
-## Milestone 12 — Final Experimental Evaluation
+## Milestone 12: Final Experimental Evaluation
 **Deliverables:**
 - Execution of all 11 scenarios across N repetitions.
 - Verified correlation: Network Impairment -> TCP Behavior -> RTT/Retransmissions -> Throughput -> Completion Time.
@@ -189,7 +189,7 @@ All visualizations use real recorded data.
 
 ---
 
-## Milestone 13 — Final Demonstration
+## Milestone 13: Final Demonstration
 **Deliverables:**
 - Desktop window launcher (`python3 netscope.py`).
 - Full visual live demonstration:

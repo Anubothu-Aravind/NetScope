@@ -24,6 +24,43 @@ The project measures and compares RTT, retransmissions, throughput, and file-tra
 
 ---
 
+## 3.1 Quick Start and Portable Setup
+
+NetScope supports macOS (Darwin), Ubuntu/Debian, Fedora/RHEL, Arch Linux, and WSL.
+
+### Prerequisites
+- Python 3.9 or higher
+- Node.js 18 or higher and npm
+
+### Automated One-Step Setup
+Run the portable setup script from the root directory:
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+The script automatically:
+1. Detects your operating system and package manager.
+2. Validates Python and Node.js environments.
+3. Creates a Python virtual environment (`.venv`) and installs `requirements.txt`.
+4. Installs Desktop (`frontend/desktop`) and Mobile (`frontend/mobile`) dependencies via npm.
+5. Generates local test payload files (`tests/data/test_1mb.bin` and `tests/data/test_10mb.bin`).
+6. Configures Linux testbed namespaces or initializes macOS standalone loopback mode.
+
+### Launching NetScope
+Start all services together:
+```bash
+./run.sh
+```
+
+Services started:
+- Desktop UI: http://localhost:5173
+- Mobile UI / Peer Join: http://localhost:5174
+- FastAPI Backend: http://localhost:8000
+- TCP Server: Port 5000 (Linux) / Port 5001 (macOS)
+
+---
+
 ## 4. Objectives
 
 1. Implement a TCP client-server file-transfer system.
@@ -267,7 +304,7 @@ The project measures:
    Linux `tc netem` applies delay to outgoing (egress) packets. For a one-way delay of $D$ ms and baseline round-trip time $RTT_0$, the forward packet experiences $\frac{RTT_0}{2} + D$, while the returning acknowledgment (ACK) is unimpaired ($\frac{RTT_0}{2}$). The measured RTT is:
    $$\text{Expected } RTT \approx RTT_0 + D$$
 2. **Sender-Side Retransmission Visibility:**
-   TCP retransmissions originate at the sender when a retransmission timeout (RTO) expires or when 3 duplicate ACKs arrive. The receiving node never observes lost packets—it only sees delayed arrivals or out-of-order data. Therefore, Wireshark/tshark filter `tcp.analysis.retransmission` **must be captured on the sending node** to accurately count retransmitted segments.
+   TCP retransmissions originate at the sender when a retransmission timeout (RTO) expires or when 3 duplicate ACKs arrive. The receiving node never observes lost packets, it only sees delayed arrivals or out-of-order data. Therefore, Wireshark/tshark filter `tcp.analysis.retransmission` **must be captured on the sending node** to accurately count retransmitted segments.
 
 ### Enabling Non-Root Packet Capture
 To allow `tshark` packet sniffing without running the whole python process as root:
@@ -368,7 +405,7 @@ The server/analysis machine should display:
 
 ## 17. Three-Person Work Distribution
 
-### Member 1 — TCP Application & File Transfer
+### Member 1: TCP Application & File Transfer
 
 Responsibilities:
 
@@ -381,7 +418,7 @@ Responsibilities:
 - QR/link generation
 - File integrity
 
-### Member 2 — Network Impairment & Experimentation
+### Member 2: Network Impairment & Experimentation
 
 Responsibilities:
 
@@ -394,7 +431,7 @@ Responsibilities:
 - Test scenarios
 - Performance measurement
 
-### Member 3 — Packet Analysis & Dashboard
+### Member 3: Packet Analysis & Dashboard
 
 Responsibilities:
 
@@ -440,7 +477,7 @@ tcp-network-project/
 
 # 19. Milestones
 
-## Milestone 1 — Environment Setup
+## Milestone 1: Environment Setup
 
 ### 1. Package Installation (Both Machines)
 Run the following on Ubuntu Machine 1 (Client) and Ubuntu Machine 2 (Server/Analyzer):
@@ -459,7 +496,7 @@ ping -c 4 <SERVER_IP>
 
 ---
 
-## Milestone 2 — TCP Communication
+## Milestone 2: TCP Communication
 
 - Implemented in `server/tcp_server.py` and `client/tcp_client.py` using length-prefixed framing (`common/protocol.py`).
 - Data port: TCP **5000**.
@@ -469,7 +506,7 @@ ping -c 4 <SERVER_IP>
 
 ---
 
-## Milestone 3 — File Transfer
+## Milestone 3: File Transfer
 
 - Chunked binary streaming (64 KB chunks).
 - Full end-to-end SHA-256 integrity check.
@@ -511,7 +548,7 @@ sudo ./network/impair.sh eth0 clear
 
 ---
 
-## Milestone 4 — GUI and QR Session
+## Milestone 4: GUI and QR Session
 
 - Create GUI
 - Create session
@@ -525,7 +562,7 @@ sudo ./network/impair.sh eth0 clear
 
 ---
 
-## Milestone 5 — Packet Capture & Protocol Dissection
+## Milestone 5: Packet Capture & Protocol Dissection
 
 Implemented in `capture/sniffer.py` and `analysis/pcap_analyzer.py`:
 - Captures live TCP streams via `tshark -i <iface> -f "tcp port 5000" -w <out.pcap>`.
@@ -566,7 +603,7 @@ python3 experiments/summarize.py --input results/transfers.jsonl --output result
 
 ---
 
-## Milestone 6 — Network Impairment
+## Milestone 6: Network Impairment
 
 Implement:
 
@@ -578,7 +615,7 @@ Implement:
 
 ---
 
-## Milestone 7 — Performance Measurement
+## Milestone 7: Performance Measurement
 
 Measure:
 
@@ -592,7 +629,7 @@ Measure:
 
 ---
 
-## Milestone 8 — Dashboard
+## Milestone 8: Dashboard
 
 Display:
 
@@ -609,7 +646,7 @@ Display:
 
 ---
 
-## Milestone 9 — Experimental Evaluation
+## Milestone 9: Experimental Evaluation
 
 Run:
 
@@ -625,7 +662,7 @@ Repeat experiments to reduce measurement noise.
 
 ---
 
-## Milestone 10 — Final Analysis
+## Milestone 10: Final Analysis
 
 Generate:
 
@@ -639,7 +676,7 @@ Generate:
 
 ---
 
-## Milestone 11 — Final Demonstration
+## Milestone 11: Final Demonstration
 
 ```mermaid
 flowchart LR

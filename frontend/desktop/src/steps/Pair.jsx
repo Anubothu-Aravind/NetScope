@@ -11,9 +11,9 @@ import { RefreshCw, Trash2, Smartphone, Monitor, CheckCircle, Wifi } from 'lucid
  * - Listen to WebSocket for client_joined and client_left events
  * - Show animated waiting message based on peer count:
  *     0 peers: spinning circle + 'Waiting for devices to connect...'
- *     1 peer sender only: 'Sender connected — waiting for receiver...'
- *     1 peer receiver only: 'Receiver connected — waiting for sender...'
- *     2 peers: 'Both connected — waiting for sender signal...'
+ *     1 peer sender only: 'Sender connected, waiting for receiver...'
+ *     1 peer receiver only: 'Receiver connected, waiting for sender...'
+ *     2 peers: 'Both connected, waiting for sender signal...'
  * - Listen for sender_ready WebSocket event and call onAdvance() prop automatically
  * - No confirm button needed
  */
@@ -128,14 +128,14 @@ export default function Pair({ onAdvance, ws, session, setSession }) {
     waitingText = 'Waiting for devices to connect...';
   } else if (peers.length === 1) {
     if (senderPeer && !receiverPeer) {
-      waitingText = 'Sender connected — waiting for receiver...';
+      waitingText = 'Sender connected, waiting for receiver...';
     } else if (receiverPeer && !senderPeer) {
-      waitingText = 'Receiver connected — waiting for sender...';
+      waitingText = 'Receiver connected, waiting for sender...';
     } else {
-      waitingText = 'Device connected — waiting for peer...';
+      waitingText = 'Device connected, waiting for peer...';
     }
   } else if (peers.length >= 2) {
-    waitingText = 'Both connected — waiting for sender signal...';
+    waitingText = 'Both connected, waiting for sender signal...';
   }
 
   return (
