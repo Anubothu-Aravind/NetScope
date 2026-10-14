@@ -141,11 +141,14 @@ case "$ACTION" in
       echo "--- Connectivity Test (ns-client -> 10.10.0.2) ---"
       if $RUN_SUDO ip netns exec ns-client ping -c 2 -W 1 10.10.0.2 >/dev/null 2>&1; then
         echo "[✔] PING SUCCESSFUL: ns-client <---> ns-server connected."
+        exit 0
       else
         echo "[!] PING FAILED: Packets cannot reach ns-server."
+        exit 1
       fi
     else
       echo "[!] Testbed is not running. Start with: sudo ./network/netns_setup.sh up"
+      exit 1
     fi
     ;;
 

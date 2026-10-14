@@ -26,6 +26,7 @@ import time
 import signal
 import argparse
 import subprocess
+import shutil
 from typing import Optional
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -58,6 +59,8 @@ class Sniffer:
         self.ns = ns
         self.process: Optional[subprocess.Popen] = None
         self._tshark_pid: Optional[int] = None  # PID of tshark inside the namespace
+        # Use a temporary capture path in /tmp so dumpcap/tshark never hits EACCES traversing user homes
+        self._temp_pcap = f"/tmp/netscope_{os.path.basename(self.out_path)}" if self.ns else None
 
     def _get_nsrun(self) -> str:
         """Return path to nsrun.sh, preferring the installed /opt version."""
@@ -68,9 +71,16 @@ class Sniffer:
         """Launch tshark in background and wait until capture is active."""
         os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
 
-        # Remove existing file if present so tshark creates it freshly as root without
-        # tripping Linux kernel fs.protected_regular security checks in world-writable dirs.
+        target_write_path = self._temp_pcap if self.ns else self.out_path
+
+        # Remove existing file if present
         try:
+            if os.path.exists(target_write_path):
+                if self.ns:
+                    nsrun = self._get_nsrun()
+                    subprocess.run(["sudo", "-n", nsrun, self.ns, "rm", "-f", target_write_path], check=False)
+                else:
+                    os.remove(target_write_path)
             if os.path.exists(self.out_path):
                 os.remove(self.out_path)
         except OSError:
@@ -80,7 +90,7 @@ class Sniffer:
             "tshark",
             "-i", self.iface,
             "-f", f"tcp port {self.port}",
-            "-w", self.out_path,
+            "-w", target_write_path,
         ]
 
         if self.ns:
@@ -194,6 +204,17 @@ class Sniffer:
 
         # Give the OS a moment to flush the file
         time.sleep(0.5)
+
+        # If capturing inside namespace via /tmp, copy the completed capture to out_path
+        if self.ns and self._temp_pcap and os.path.isfile(self._temp_pcap):
+            nsrun = self._get_nsrun()
+            # Make the root-created temp capture readable
+            subprocess.run(["sudo", "-n", nsrun, self.ns, "chmod", "666", self._temp_pcap], check=False)
+            try:
+                shutil.copy2(self._temp_pcap, self.out_path)
+            except Exception:
+                subprocess.run(["sudo", "-n", nsrun, self.ns, "cp", self._temp_pcap, self.out_path], check=False)
+            subprocess.run(["sudo", "-n", nsrun, self.ns, "rm", "-f", self._temp_pcap], check=False)
 
         if os.path.isfile(self.out_path):
             try:

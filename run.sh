@@ -17,7 +17,8 @@ fi
 # --- Namespace testbed check ---
 USE_NETNS=0
 if command -v ip > /dev/null 2>&1 && [ -f "/opt/netscope/netns_setup.sh" ]; then
-    if sudo -n /opt/netscope/netns_setup.sh status > /dev/null 2>&1; then
+    STATUS_OUT="$(sudo -n /opt/netscope/netns_setup.sh status 2>/dev/null || true)"
+    if echo "$STATUS_OUT" | grep -q "ns-client: PRESENT" && echo "$STATUS_OUT" | grep -q "ns-server: PRESENT"; then
         USE_NETNS=1
     else
         echo "[*] Bringing up network namespaces..."

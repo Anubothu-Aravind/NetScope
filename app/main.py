@@ -74,19 +74,23 @@ def get_script_path(script_name: str) -> str:
     return os.path.join(PROJECT_ROOT, "network", script_name)
 
 def cleanup_old_server_storage(max_age_seconds: int = 300):
-    """Delete files in results/server_storage older than 5 minutes."""
-    storage_dir = os.path.join(PROJECT_ROOT, "results", "server_storage")
-    if not os.path.isdir(storage_dir):
-        return
+    """Delete files in results/server_storage and server_storage older than 5 minutes."""
+    storage_dirs = [
+        os.path.join(PROJECT_ROOT, "results", "server_storage"),
+        os.path.join(PROJECT_ROOT, "server_storage"),
+    ]
     now = time.time()
-    for fn in os.listdir(storage_dir):
-        fp = os.path.join(storage_dir, fn)
-        if os.path.isfile(fp):
-            try:
-                if now - os.path.getmtime(fp) > max_age_seconds:
-                    os.remove(fp)
-            except Exception:
-                pass
+    for sdir in storage_dirs:
+        if not os.path.isdir(sdir):
+            continue
+        for fn in os.listdir(sdir):
+            fp = os.path.join(sdir, fn)
+            if os.path.isfile(fp):
+                try:
+                    if now - os.path.getmtime(fp) > max_age_seconds:
+                        os.remove(fp)
+                except Exception:
+                    pass
 
 
 @asynccontextmanager
@@ -348,7 +352,7 @@ def ensure_server_running():
         return  # Process is already running
 
     server_script = os.path.join(PROJECT_ROOT, "server", "tcp_server.py")
-    storage_dir = os.path.join(PROJECT_ROOT, "server_storage")
+    storage_dir = os.path.join(PROJECT_ROOT, "results", "server_storage")
     os.makedirs(storage_dir, exist_ok=True)
 
     if use_netns:
@@ -1727,8 +1731,8 @@ def get_fernet_key(run_id: str) -> bytes:
 
 
 
-@app.get("/api/download/{run_id}")
-async def download_file_by_run_id(run_id: str, background_tasks: BackgroundTasks):
+@app.api_route("/api/download/{run_id}", methods=["GET", "HEAD"])
+async def download_file_by_run_id(run_id: str, request: Request, background_tasks: BackgroundTasks):
     """
     Find file in results/server_storage by run_id from transfers.jsonl,
     decrypt using Fernet key derived from run_id, stream as download, and delete after.
@@ -1749,19 +1753,34 @@ async def download_file_by_run_id(run_id: str, background_tasks: BackgroundTasks
                 except Exception:
                     pass
 
-    storage_dir = os.path.join(PROJECT_ROOT, "results", "server_storage")
+    storage_dirs = [
+        os.path.join(PROJECT_ROOT, "results", "server_storage"),
+        os.path.join(PROJECT_ROOT, "server_storage"),
+        os.path.join(PROJECT_ROOT, "results", "uploads"),
+    ]
     file_path = None
     if matched_file:
-        candidate = os.path.join(storage_dir, matched_file)
-        if os.path.isfile(candidate):
-            file_path = candidate
+        for sdir in storage_dirs:
+            if not os.path.isdir(sdir):
+                continue
+            candidate = os.path.join(sdir, matched_file)
+            if os.path.isfile(candidate):
+                file_path = candidate
+                break
 
     # Fallback: check if run_id directly names or matches a file in server_storage
-    if not file_path and os.path.isdir(storage_dir):
-        for fn in os.listdir(storage_dir):
-            if fn == run_id or run_id in fn:
-                file_path = os.path.join(storage_dir, fn)
-                matched_file = fn
+    if not file_path:
+        for sdir in storage_dirs:
+            if not os.path.isdir(sdir):
+                continue
+            for fn in os.listdir(sdir):
+                if fn == run_id or run_id in fn or (matched_file and matched_file in fn):
+                    candidate = os.path.join(sdir, fn)
+                    if os.path.isfile(candidate):
+                        file_path = candidate
+                        matched_file = fn
+                        break
+            if file_path:
                 break
 
     if not file_path or not os.path.isfile(file_path):
@@ -1778,14 +1797,23 @@ async def download_file_by_run_id(run_id: str, background_tasks: BackgroundTasks
         # Fallback to raw bytes if not encrypted
         decrypted_bytes = file_bytes
 
-    # Schedule deletion after response finishes
-    background_tasks.add_task(os.remove, file_path)
-
     out_name = matched_file or f"download_{run_id}.bin"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{out_name}"',
+        "Content-Length": str(len(decrypted_bytes)),
+    }
+
+    if request.method == "HEAD":
+        return Response(content=b"", media_type="application/octet-stream", headers=headers)
+
+    # Schedule deletion after response finishes (only for server_storage files, not uploads)
+    if "uploads" not in file_path:
+        background_tasks.add_task(os.remove, file_path)
+
     return Response(
         content=decrypted_bytes,
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{out_name}"'}
+        headers=headers
     )
 
 
